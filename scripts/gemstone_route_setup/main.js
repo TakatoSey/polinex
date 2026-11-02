@@ -230,6 +230,8 @@ m.onDeath(() => { releaseAll(); setStage("GRS_WAIT_WORLD"); });
 // Failsafe/break pause: the engine stops ticking states, so make sure nothing stays held.
 on("tick", () => {
   if (logDirty && U.now() - logSavedAt > 5000) flushLog();
+  ctx.mover.digger.watchdog();
+  ctx.miner.watchdog();
   const a = macro.active();
   const paused = !!a && a.name() === NAME && a.isPaused();
   if (paused && !ctx.paused) { ctx.paused = true; releaseAll(); ctx.detail = "Paused (failsafe / break)"; }
@@ -362,7 +364,7 @@ m.onState("GRS_INSPECT", () => {
   ctx.progressText = "Checked " + (st.warps.length - st.unchecked) + "/" + st.warps.length + " - " + st.verdict;
 
   if (S.complete(st)) {
-    if (!ins.completeSince) ins.completeSince = U.now();
+    if (!ins.completeSince) { ins.completeSince = U.now(); ctx.mover.stop(); } // stop moving/mining right away
     if (U.now() - ins.completeSince > 1500) { ctx.mover.stop(); setStage("GRS_DECIDE"); }
     return;
   }

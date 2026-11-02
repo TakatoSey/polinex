@@ -67,6 +67,11 @@ if (scenarioName === "basic" || scenarioName === "gem") {
   fillBox(15, 56, 15, 35, 62, 35, "minecraft:air");   // lower cavern, floor 55
   startPos = { x: 22.3, y: 70, z: 22.8 };              // deliberately off-centre
   warps = [{ number: 1, x: 22, y: 56, z: 22 }, { number: 2, x: 30, y: 56, z: 30 }];
+} else if (scenarioName === "diag") {
+  // pocket in the far corner: the cavern is exactly diagonal (dx == dz), the old digger zigzagged here
+  fillBox(60, 60, 60, 63, 61, 63, "minecraft:air");
+  startPos = { x: 61.5, y: 60, z: 61.5 };
+  warps = [{ number: 1, x: 40, y: 60, z: 40 }, { number: 2, x: 30, y: 60, z: 30 }];
 } else if (scenarioName === "tunnel") {
   // start in a separate pocket: must dig to reach the cavern
   fillBox(56, 60, 20, 60, 62, 24, "minecraft:air");
@@ -112,7 +117,9 @@ let navFailed = false;
 let breaking = { key: null, ticks: 0 };
 const pendingBombs = [];
 const log = [];
-let stats = { mined: 0, placed: 0, bombs: 0, cmds: [], diagDownSteps: 0, inspectVerticalSteps: 0, inspectMinZ: 999, shaftSteps: 0, movedWhileMiningDown: 0 };
+let stats = { mined: 0, placed: 0, bombs: 0, cmds: [], diagDownSteps: 0, inspectVerticalSteps: 0, inspectMinZ: 999, shaftSteps: 0, movedWhileMiningDown: 0, axisChanges: 0, attackPresses: 0, clicks: 0, floorMined: 0, turnDeg: 0 };
+let lastAxis = null, lastAttack = false;
+const hist = [];
 const seenSteps = new Set();
 
 function standableFeet(x, y, z) { return solid(x, y - 1, z) && passable(x, y, z) && passable(x, y + 1, z); }
@@ -143,12 +150,23 @@ function bfsPath(fromFeet, toFeet) {
   return null;
 }
 function feetBlock() { return { x: Math.floor(P.x), y: Math.floor(P.y), z: Math.floor(P.z) }; }
-function mouseOver() {
-  if (!P.aim) return null;
+function lookAt(x, y, z) {
   const e = eye();
-  const d = { x: P.aim.x - e.x, y: P.aim.y - e.y, z: P.aim.z - e.z };
+  const d = { x: x - e.x, y: y - e.y, z: z - e.z };
   const l = Math.sqrt(d.x * d.x + d.y * d.y + d.z * d.z) || 1;
-  const far = { x: e.x + d.x / l * 5, y: e.y + d.y / l * 5, z: e.z + d.z / l * 5 };
+  const nd = { x: d.x / l, y: d.y / l, z: d.z / l };
+  if (P.look) stats.turnDeg += Math.acos(Math.max(-1, Math.min(1, nd.x * P.look.x + nd.y * P.look.y + nd.z * P.look.z))) * 180 / Math.PI;
+  if (process.env.PITCH && state === "GRS_INSPECT") {
+    const pitch = -Math.asin(nd.y) * 180 / Math.PI, yaw = Math.atan2(-nd.x, nd.z) * 180 / Math.PI;
+    const stp = DEBUG.ctx && DEBUG.ctx.mover.digger.step; console.log("LOOK yaw " + yaw.toFixed(0) + " pitch " + pitch.toFixed(0) + " P " + P.x.toFixed(2) + " aimpt " + [x, y, z].map((q) => q.toFixed(2)).join(",") + " stepAims " + (stp && stp.aims ? JSON.stringify(stp.aims) : "-") + " clear " + (stp ? JSON.stringify(stp.clear) : "-"));
+  }
+  P.look = nd;
+  P.aim = { x, y, z };
+}
+function mouseOver() {
+  if (!P.look) return null;
+  const e = eye();
+  const far = { x: e.x + P.look.x * 5, y: e.y + P.look.y * 5, z: e.z + P.look.z * 5 };
   const h = raytraceFrom(e, far);
   return h.type === "BLOCK" ? h : null;
 }
@@ -238,9 +256,9 @@ const api = {
     bestStandSpot: () => null, clearFakeLook() {},
   },
   rotation: {
-    miningRotateToVec: (x, y, z) => { P.aim = { x, y, z }; }, miningIsDone: () => true, miningIsRotating: () => false, miningStopRotation() {},
-    generalRotateToVec: (x, y, z) => { P.aim = { x, y, z }; }, generalIsDone: () => true, generalStopRotation() {},
-    pathFindRotateToVec: (x, y, z) => { P.aim = { x, y, z }; }, pathFindIsDone: () => true, pathFindStopRotation() {},
+    miningRotateToVec: (x, y, z) => lookAt(x, y, z), miningIsDone: () => true, miningIsRotating: () => false, miningStopRotation() {},
+    generalRotateToVec: (x, y, z) => lookAt(x, y, z), generalIsDone: () => true, generalStopRotation() {},
+    pathFindRotateToVec: (x, y, z) => lookAt(x, y, z), pathFindIsDone: () => true, pathFindStopRotation() {},
     etherwarpStopRotation() {}, distanceTo: () => 10,
   },
   etherwarp: { canReach: () => false, stop() {}, failed: () => false, etherwarpTo: () => false, pathfindTo: () => false },
@@ -280,14 +298,17 @@ const api = {
   },
   module: { get: () => null },
   player: {
-    pos: () => ({ x: P.x, y: P.y, z: P.z }), speed: () => P.speed || 0, blockPos: feetBlock, x: () => P.x, y: () => P.y, z: () => P.z,
+    pos: () => ({ x: P.x, y: P.y, z: P.z }), speed: () => P.speed || 0,
+    yaw: () => (P.look ? Math.atan2(-P.look.x, P.look.z) * 180 / Math.PI : 0),
+    pitch: () => (P.look ? -Math.asin(P.look.y) * 180 / Math.PI : 0),
+    motionX: () => P.mx || 0, motionZ: () => P.mz || 0, blockPos: feetBlock, x: () => P.x, y: () => P.y, z: () => P.z,
     onGround: () => !(P.jumpT > 0), jump: () => { if (!(P.jumpT > 0)) P.jumpT = 8; }, setKey: (k, v) => { P.keys[k] = v; }, releaseKeys: () => { P.keys = {}; }, resetWASD: () => { P.walkTo = null; },
     setSneaking: (v) => { P.sneak = v; }, stopAllMovement: () => { P.keys = {}; walk = null; },
     heldItemSlot: () => P.held, setHeldItemSlot: (s) => { P.held = s; return true; },
     itemByName: (n) => hotbar.findIndex((h) => h && h.toLowerCase().includes(n.toLowerCase()) && (inv[h] === undefined || inv[h] > 0)),
     itemCount: (n) => inv[n] || 0, etherwarpSlot: () => -1, aoteSlot: () => -1, isGuiOpen: () => false,
     mouseOverBlock: () => { const h = mouseOver(); return h ? h.block : null; },
-    leftClick: () => { P.keys.click = true; return true; },
+    leftClick: () => { P.keys.click = true; stats.clicks++; return true; },
     rightClick: () => {
       const h = mouseOver();
       if (hotbar[P.held] === "Cobblestone" && h && inv.Cobblestone > 0) {
@@ -322,6 +343,12 @@ function mkQuery(status, nodes) {
 
 // ---------------------------------------------------------------- physics per tick
 function physics() {
+  if (P.keys.attack && !lastAttack) stats.attackPresses++;
+  if (process.env.ATK && lastAttack && !P.keys.attack && DEBUG.ctx) {
+    const st0 = DEBUG.ctx.mover.digger.step; const mo = mouseOver();
+    console.log("RELEASE t=" + simTime, "phase", st0 && st0.phase, "feet", JSON.stringify(feetBlock()), "over", mo && JSON.stringify(mo.block), "id", mo && get(mo.block.x, mo.block.y, mo.block.z), "stepFeet", st0 && JSON.stringify(st0.feet));
+  }
+  lastAttack = !!P.keys.attack;
   const before = { x: P.x, z: P.z };
   // nav walking
   if (walk) {
@@ -343,6 +370,7 @@ function physics() {
     else if (ty === cy + 1 && passable(nx, ty, nz) && passable(nx, ty + 1, nz) && passable(P.x, cy + 2, P.z)) { P.x = nx; P.z = nz; P.y = ty; } // step up
   }
   P.speed = Math.hypot(P.x - before.x, P.z - before.z);
+  P.mx = P.x - before.x; P.mz = P.z - before.z;
   // jump + gravity
   if (P.jumpT > 0) {
     if (P.jumpT > 3 && passable(P.x, P.y + 2.1, P.z)) P.y += 0.3;
@@ -360,7 +388,15 @@ function physics() {
       const k = K(h.block.x, h.block.y, h.block.z);
       if (breaking.key !== k) breaking = { key: k, ticks: 0 };
       const id = get(h.block.x, h.block.y, h.block.z);
-      if (++breaking.ticks >= 3 && id !== "minecraft:bedrock") { set(h.block.x, h.block.y, h.block.z, "minecraft:air"); stats.mined++; breaking = { key: null, ticks: 0 }; }
+      if (process.env.ATK) { hist.push("t" + (simTime % 100000) + " P" + P.x.toFixed(2) + " phys-over " + JSON.stringify(h.block) + " bt " + (breaking.ticks + 1) + " phase " + (DEBUG.ctx && DEBUG.ctx.mover.digger.step && DEBUG.ctx.mover.digger.step.phase)); if (hist.length > 8) hist.shift(); }
+      if (++breaking.ticks >= 3 && id !== "minecraft:bedrock") {
+        if (h.block.y < Math.floor(P.y) && !(DEBUG.ctx && DEBUG.ctx.mover.digger.step && DEBUG.ctx.mover.digger.step.vertical)) {
+          stats.floorMined++;
+          if (process.env.ATK) console.log(hist.join("\n"));
+          if (process.env.ATK) { const d = DEBUG.ctx, st1 = d.mover.digger.step; console.log("FLOOR", JSON.stringify(h.block), "P", P.x.toFixed(2), P.y, P.z.toFixed(2), "state", state, "step", st1 && st1.phase, "feet", st1 && JSON.stringify(st1.feet), "aheadLeft", st1 && st1.aheadLeft, "holdNext", st1 && st1.holdNext && JSON.stringify([...st1.holdNext]), "holding", d.miner.holding, "breakTicks", breaking.ticks); }
+        }
+        set(h.block.x, h.block.y, h.block.z, "minecraft:air"); stats.mined++; breaking = { key: null, ticks: 0 };
+      }
     }
   }
   // bombs
@@ -416,6 +452,8 @@ for (; t < MAX && running; t++) {
       if (st0.feet.y < st0.from.y && horiz && !st0.drop) stats.diagDownSteps++;
       if (state === "GRS_INSPECT" && st0.feet.y !== st0.from.y) stats.inspectVerticalSteps++;
       if (st0.vertical) stats.shaftSteps++;
+      if (st0.axis && lastAxis && st0.axis !== lastAxis) stats.axisChanges++;
+      if (st0.axis) lastAxis = st0.axis;
     }
     if (st0 && st0.vertical && st0.phase === "clear" && (P.walkTo || walk || P.speed > 0.001)) stats.movedWhileMiningDown++;
     if (state === "GRS_INSPECT") stats.inspectMinZ = Math.min(stats.inspectMinZ, Math.floor(P.z));
