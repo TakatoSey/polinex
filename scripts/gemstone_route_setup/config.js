@@ -47,8 +47,8 @@ const SETTINGS = [
     description: "A walking path longer than straight distance x this counts as a detour." },
   { id: "digFactor", type: "decimalSlider", name: "Dig Preference", min: 0.5, max: 3, default: 1.0, increment: 0.05,
     description: "Dig when walkCost > digCost x this. Higher = dig less often." },
-  { id: "tunnelPitch", type: "slider", name: "Tunnel Pitch", min: 20, max: 50, default: 30,
-    description: "Fixed downward angle while tunnelling (22-51 hits both the head and the feet block)." },
+  { id: "tunnelPitch", type: "slider", name: "Tunnel Pitch", min: 20, max: 50, default: 25,
+    description: "Fixed downward angle while tunnelling. 25 is the flattest that still breaks the feet block from the middle of the block." },
   { id: "maxDrop", type: "slider", name: "Max Drop", min: 1, max: 20, default: 8,
     description: "Highest fall onto known solid ground the digger accepts (ledges and breaking into a cave below)." },
   { id: "maxDigLen", type: "slider", name: "Max Dig Length", min: 8, max: 160, default: 70,
@@ -93,6 +93,10 @@ const SETTINGS = [
     description: "Hotbar slot used when cobble / Bob-ombs must be moved from the inventory." },
 
   // ---- Display ----
+  { id: "chestWaitSec", type: "slider", name: "Treasure Chest Pause (s)", min: 0, max: 60, default: 15,
+    description: "When a treasure chest spawns next to you: stop moving/mining this long (or until it is gone) so you or a chest feature can open it. 0 = ignore." },
+  { id: "copyLog", type: "string", name: "Copy Log", default: "",
+    description: ".grs log puts the recent log here: click the box, Ctrl+A, Ctrl+C (scripts cannot write the clipboard)." },
   { id: "render", type: "boolean", name: "Render Route Overlay", default: true },
   { id: "debug", type: "boolean", name: "Debug Log", default: false },
 ];
@@ -142,6 +146,7 @@ function makeCfg(m) {
     bombFuseMs: () => num("bombFuseMs"),
     requireBombs: () => s("requireBombs") === true,
     materialSlot: () => Math.max(0, Math.min(8, num("materialSlot") - 1)),
+    chestWaitSec: () => num("chestWaitSec"),
     render: () => s("render") === true,
     debug: () => s("debug") === true,
   };

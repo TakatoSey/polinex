@@ -43,14 +43,15 @@ Every message goes to three places:
 Each line has the time, level (INFO/WARN/FAIL), stage and your block position, e.g.
 `14:03:12 WARN [BUILD @512,88,431] Warp #4: line #4 -> #5 blocked by protected gemstone ...`
 
-In game: `.grs log` shows the last 15 lines (`.grs log 50` for more) and `.grs clearlog` empties it. Turn on **Debug Log** to also echo the INFO lines in chat. If something goes wrong, send me the `log` value or the `[GRS]` lines from latest.log.
+In game: `.grs log` (or `.grs log 200`) puts the recent lines into the **Copy Log** box in the macro settings. Copy them from there with Ctrl+A, Ctrl+C. `.grs logchat` shows them in chat, and `.grs clearlog` empties the log. Turn on **Debug Log** to also echo the INFO lines in chat. If something goes wrong, send me the `log` value or the `[GRS]` lines from latest.log.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `.grs` / `.grs status` | Route Status summary and problems per warp |
-| `.grs log [n]` | Last n log lines (default 15) |
+| `.grs log [n]` | Puts the last n log lines (default 60) into the macro setting **Copy Log**: click it, Ctrl+A, Ctrl+C. Nothing goes into chat; scripts have no clipboard access |
+| `.grs logchat [n]` | Last n log lines in chat |
 | `.grs clearlog` | Empty the persistent log |
 | `.grs managers` | List route manager ids (for "Route Manager Id") |
 | `.grs fix` | Show which Dynamic Route Fix control the script found |
@@ -61,9 +62,13 @@ In game: `.grs log` shows the last 15 lines (`.grs log 50` for more) and `.grs c
 
 - **Walk or mine straight**: the native planner only sees loaded terrain, so early in a lobby it often picks a detour and has to come back later. With **Prefer Mining Straight** (default on), the script mines straight toward the target whenever the walking path is longer than `straight distance × Detour Threshold` (1.35) or its first blocks lead *away* from the target. It also mines when `walkCost > digCost × Dig Preference`. It never mines through gems, liquids, unknown terrain or structure cores. A planned path is followed to the end, and a slightly better one found later is ignored. Leaving a tunnel for a walk needs a walk that is at least 40% cheaper *and* not a detour.
 - **Inspection is X/Z only**: the full height is always loaded and only X/Z render in later, so inspection only needs to get close in X/Z. *Walking* there may still go up or down freely, through caves and drops, if the planner finds a good path. Only *digging* stays level at the current height, and it never Etherwarps or digs up or down just to check a warp.
-- **Tunnelling like a player**: it looks *once* along the tunnel (fixed yaw, `Tunnel Pitch` 30° down), crouches, holds left-click and presses W only when the space ahead is open, so it never walks into the wall. The camera does **not** move per block: at 30° the held crosshair breaks the head block, then the feet block, then the next ones as you move forward. Left-click is only held while the crosshair is on a tunnel block it may mine. It's released immediately (also predicted ~3 ticks ahead) before it could touch the floor, a gem or anything else. Tunnels run along one axis (an L-shape, never a zigzag). A blocked straight line is passed with a sidestep: never a U-turn, at most 3 in a row. A dead-man switch releases the button and keys if the digger stops being driven.
+- **Tunnelling like a player**: it looks *once* along the tunnel (fixed yaw, `Tunnel Pitch` 25° down (the flattest angle that still breaks the feet block)), crouches, holds left-click and presses W only when the space ahead is open, so it never walks into the wall. The camera does **not** move per block: at 30° the held crosshair breaks the head block, then the feet block, then the next ones as you move forward. Left-click is only held while the crosshair is on a tunnel block it may mine. It's released immediately (also predicted ~3 ticks ahead) before it could touch the floor, a gem or anything else. Tunnels run along one axis (an L-shape, never a zigzag). A blocked straight line is passed with a sidestep: never a U-turn, at most 3 in a row. A dead-man switch releases the button and keys if the digger stops being driven.
 - **No 45° digging down**: the digger has no diagonal-down staircase, because that pattern trips failsafes. To go lower it walks, drops off a ledge onto known ground (up to `Max Drop`), or tunnels level until it's above the target and then digs a straight vertical shaft.
-- **Light on the game (no lag)**: every block lookup is a single game call, classified by block id and cached for the current tick. Before this, one tick could read 20,000+ blocks with ~5 calls each. Searches are bounded: the worst tick reads ~1,000 blocks, a normal one ≤ ~250.
+- **Crystal Nucleus**: `/warp cn` lands you in the Nucleus, where nothing can be mined. The script *walks* out with the pathfinder only (no digging, no Etherwarp): toward the route first, then the four directions out of the Nucleus. Mining is refused while you're inside.
+- **Treasure chests**: a background block scanner (no per-tick cost) and the "treasure chest" chat message are both watched. When a chest appears next to you, all movement and mining stop until it's gone (`Treasure Chest Pause`, 15 s max), so you or a Polinex chest feature can open it.
+- **Walking faces forward**: for any move longer than about a block it turns toward where it walks (yaw only, level look) and walks forward. No long backwards or sideways (A D) walking. Small corrections while tunnelling only move forward/back toward the wall.
+- **Stays in mining mode**: once a tunnel is started it's finished. It doesn't switch to the pathfinder halfway (the pathfinder is only used again if the tunnel fails).
+- - **Light on the game (no lag)**: every block lookup is a single game call, classified by block id and cached for the current tick. Before this, one tick could read 20,000+ blocks with ~5 calls each. Searches are bounded: the worst tick reads ~1,000 blocks, a normal one ≤ ~250.
 - **No wobbling (W S W S / A D A D)**: getting onto a spot crouch-walks, *taps* the keys within 0.6 blocks, waits after an overshoot instead of reversing, and accepts ~0.3 blocks instead of chasing the exact centre.
 - **No pointless climbing**: it only climbs when the target is 2+ blocks higher, or 1 higher and directly there, at most 2 jump tries per step. No more looking up and jump-spamming for a block that's within reach.
 - **Mine or walk**: it walks the planner's path unless that path is a real detour (much longer *and* 8+ blocks extra) *and* the straight line actually needs mining. In open caves it just walks.
@@ -120,6 +125,8 @@ node tools/sim.js bridge   # waypoint floating beside a wall: sideways support, 
 JUMPBOOST=1 node tools/sim.js far   # jump boost: still no blocks placed while tunnelling
 node tools/sim.js midline  # obstruction near the far end over a deep pit: tunnel impossible -> walks around to reach it
 EXPECT_FAIL=1 TICKS=40000 node tools/sim.js pit   # unreachable: stops with a manual-step message, no loop
+node tools/sim.js nucleus  # start in the Crystal Nucleus: walks out, never mines there
+node tools/sim.js chest    # a treasure chest spawns mid-tunnel: everything pauses until it is gone
 node tools/sim.js shaft    # route straight below a sealed pocket: centre, dig a vertical shaft standing still, drop in
 node tools/sim.js gem      # gemstone on a line: mined like any block (Protect Gemstones off)
 ```

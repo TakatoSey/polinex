@@ -76,7 +76,8 @@ Digger.prototype.driveTick = function (s) {
   const stalled = U.now() - (s.progressAt || s.started);
   if (!holding && stalled > 700) {
     // crosshair is not on the block: we are off-centre (e.g. pushed). Shuffle back to the cell centre, crouched.
-    const c = U.v(s.from.x + 0.5, s.from.y, s.from.z + 0.5);
+    // a bit closer to the face makes the crosshair land on the feet block; only W/S, no sideways A/D
+    const c = U.v(s.from.x + 0.5 + s.h.x * 0.2, s.from.y, s.from.z + 0.5 + s.h.z * 0.2);
     if (!ctx.input.nudge(c, 0.3)) return { s: "busy" };
   }
   player.resetWASD(); // standing still while the block breaks (no wall kissing)

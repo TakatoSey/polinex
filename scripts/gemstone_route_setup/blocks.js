@@ -80,6 +80,7 @@ Blocks.prototype.mineBlockReason = function (p, opts) {
   if (!i.loaded) return "unknown terrain (not loaded)";
   if (i.air) return null;
   if (i.liquid) return "liquid";
+  if (this.ctx.inNucleus) return "Crystal Nucleus (nothing can be mined there)";
   const id = i.id.toLowerCase();
   if (ALWAYS_PROTECTED.test(id)) return "unbreakable " + id;
   const bl = this.blacklist.get(U.key(p));

@@ -200,6 +200,8 @@ function warpChecked(number) {
 // ------------------------------------------------------------------ lifecycle
 m.onEnable(() => {
   run = newRun();
+  ctx.chestHold = null;
+  if (chestScan) chestScan.start();
   logLine("INFO", "===== start (route manager " + (ctx.cfg.managerId() || "auto") + ", lobby " + (currentLobbyId() || "?") + ") =====");
   ctx.issue = "";
   ctx.paused = false;
@@ -210,6 +212,8 @@ m.onEnable(() => {
 });
 
 m.onDisable(() => {
+  if (chestScan) chestScan.stop();
+  ctx.chestHold = null;
   ctx.log("Macro stopped");
   flushLog();
   releaseAll();
@@ -230,8 +234,46 @@ m.onReturn(resumeStage);
 m.onDeath(() => { releaseAll(); setStage("GRS_WAIT_WORLD"); });
 
 // Failsafe/break pause: the engine stops ticking states, so make sure nothing stays held.
+// ---- treasure chests: a background block scanner (no per-tick cost) + the chat message, so we notice at once
+let chestScan = null, chestVer = -1;
+const seenChests = new Set();
+try { chestScan = scan.create({ name: "grs-chests", blocks: ["minecraft:chest"], range: 1, height: 12 }); } catch (e) { chestScan = null; }
+function holdForChest(pos) {
+  const k = U.key(pos);
+  if (seenChests.has(k) || ctx.cfg.chestWaitSec() <= 0) return;
+  seenChests.add(k);
+  ctx.chestHold = { pos: U.floor(pos), until: U.now() + ctx.cfg.chestWaitSec() * 1000 };
+  releaseAll();
+  ctx.log("Treasure chest at " + U.fmt(pos) + ": pausing up to " + ctx.cfg.chestWaitSec() + "s");
+}
+function chestWatch() {
+  if (!run) return;
+  if (ctx.chestHold) {
+    const still = /chest/.test(ctx.blocks.info(ctx.chestHold.pos).id);
+    if (!still || U.now() > ctx.chestHold.until) { ctx.log("Treasure chest done, continuing"); ctx.chestHold = null; ctx.progress(); }
+    return;
+  }
+  if (!chestScan) return;
+  const v = chestScan.version();
+  if (v === chestVer) return;
+  chestVer = v;
+  const n = chestScan.nearest(player.pos());
+  if (n && U.dist(player.pos(), U.v(n.x + 0.5, n.y + 0.5, n.z + 0.5)) < 7) holdForChest(U.v(n.x, n.y, n.z));
+}
+on("chatReceive", (message) => {
+  if (!run || !/treasure chest/i.test(String(message))) return;
+  // look right around us once (cached reads), the scanner may still be catching up
+  const p = player.blockPos();
+  for (let dx = -3; dx <= 3; dx++) for (let dy = -1; dy <= 2; dy++) for (let dz = -3; dz <= 3; dz++) {
+    const c = U.v(p.x + dx, p.y + dy, p.z + dz);
+    if (/(^|:)chest$/.test(ctx.blocks.info(c).id)) { holdForChest(c); return; }
+  }
+});
+
 on("tick", () => {
   ctx.tickNo = (ctx.tickNo || 0) + 1; // new block-read cache every tick
+  if (ctx.tickNo % 10 === 0) { try { ctx.inNucleus = /nucleus/i.test(String(skyblock.area())); } catch (e) { ctx.inNucleus = false; } }
+  chestWatch();
   if (logDirty && U.now() - logSavedAt > 5000) flushLog();
   ctx.input.tick();
   ctx.mover.digger.watchdog();
@@ -283,6 +325,36 @@ m.onState("GRS_INIT", () => {
   ctx.log("Route '" + (rt.name || "?") + "' with " + rt.waypoints.length + " waypoints, lobby " + (run.lobbyId || "?"));
   setStage("GRS_INSPECT");
 });
+
+// After /warp cn you stand in the Crystal Nucleus, where nothing can be mined: WALK out (pathfinder only, no
+// digging, no Etherwarp), toward the route first, then the four directions out of the Nucleus.
+const NUCLEUS_CENTER = { x: 513, z: 513 }; // the Crystal Hollows span x/z 202..823, the Nucleus sits in the middle
+function nucleusExit() {
+  const rt = S.runtimeRoute(run.managerId);
+  if (!rt || !rt.waypoints.length) { fail("No Gemstone Macro route is selected."); return; }
+  if (!run.nuc) {
+    let near = rt.waypoints[0], nd = Infinity;
+    rt.waypoints.forEach((w) => { const d = U.dist(player.pos(), w); if (d < nd) { nd = d; near = w; } });
+    const y = Math.floor(player.y());
+    run.nuc = { idx: 0, targets: [U.v(near.x, near.y, near.z)].concat([[1, 0], [-1, 0], [0, 1], [0, -1]].map((d) =>
+      U.v(NUCLEUS_CENTER.x + d[0] * 75, y, NUCLEUS_CENTER.z + d[1] * 75))) };
+  }
+  if (run.nuc.idx >= run.nuc.targets.length) {
+    fail("Could not walk out of the Crystal Nucleus in any direction. Walk out once by hand, then start again.");
+    return;
+  }
+  const t = run.nuc.targets[run.nuc.idx];
+  ctx.detail = "Walking out of the Crystal Nucleus (no mining there)";
+  ctx.mover.goTo({ id: "nucexit:" + run.nuc.idx, pos: t, near: 4, approach: true, flat: true, dyRange: 10,
+    allowDig: false, allowEther: false, label: "out of the Nucleus",
+    arrive: () => !ctx.inNucleus && S.read() !== null });
+  const r = ctx.mover.tick();
+  if (r.s === "fail") {
+    ctx.log("Nucleus exit direction " + (run.nuc.idx + 1) + " failed (" + r.reason + "), trying the next one");
+    ctx.mover.stop();
+    run.nuc.idx++;
+  }
+}
 
 function chooseInspectTarget(st, unchecked) {
   const ins = run.inspect;
@@ -346,24 +418,14 @@ function inspectGoal(st, w) {
 }
 
 m.onState("GRS_INSPECT", () => {
+  if (ctx.chestHold) { ctx.detail = "Treasure chest at " + U.fmt(ctx.chestHold.pos) + ": paused"; return; }
   if (skyblock.location() !== "CRYSTAL_HOLLOWS") { run.worldSince = U.now(); setStage("GRS_WAIT_WORLD"); return; }
   const st = status();
   const ins = run.inspect;
   pollInspectCosts();
 
-  if (!st) {
-    // Route Status is null in the Crystal Nucleus: walk out toward the route.
-    const rt = S.runtimeRoute(run.managerId);
-    if (!rt || !rt.waypoints.length) { fail("No Gemstone Macro route is selected."); return; }
-    let near = rt.waypoints[0], nd = Infinity;
-    rt.waypoints.forEach((w) => { const d = U.dist(player.pos(), w); if (d < nd) { nd = d; near = w; } });
-    ctx.detail = "Leaving the Crystal Nucleus";
-    ctx.mover.goTo({ id: "exit:" + U.key(near), pos: U.v(near.x, near.y, near.z), near: 4, approach: true, flat: true, label: "route (leaving Nucleus)",
-      arrive: () => S.read() !== null });
-    const r = ctx.mover.tick();
-    if (r.s === "fail") { ctx.setIssue(r.reason); ctx.mover.stop(); }
-    return;
-  }
+  if (!st) { nucleusExit(); return; } // Route Status is null in the Crystal Nucleus (where /warp cn lands)
+  run.nuc = null;
   if (st.verdict === "No route") { fail("Route Status: no route selected."); return; }
   ctx.progressText = "Checked " + (st.warps.length - st.unchecked) + "/" + st.warps.length + " - " + st.verdict;
 
@@ -537,6 +599,7 @@ m.onState("GRS_PREP", () => {
 });
 
 m.onState("GRS_BUILD", () => {
+  if (ctx.chestHold) { ctx.detail = "Treasure chest at " + U.fmt(ctx.chestHold.pos) + ": paused"; return; }
   if (skyblock.location() !== "CRYSTAL_HOLLOWS") { run.worldSince = U.now(); setStage("GRS_WAIT_WORLD"); return; }
   const st = status();
   if (!st) { setStage("GRS_INSPECT"); return; }
@@ -703,8 +766,13 @@ try {
     } else if (sub === "lobby") {
       script.chat("§7Lobby id: §f" + (currentLobbyId() || "?"));
     } else if (sub === "log") {
+      // scripts cannot write the clipboard: put the log in the "Copy Log" text box (Ctrl+A, Ctrl+C there)
+      const n = Math.max(1, Math.min(400, parseInt(args[1] || "60", 10) || 60));
+      flushLog();
+      m.setSetting("copyLog", logLines.slice(-n).join("  ||  "));
+      script.chat("§7[GRS] Last " + Math.min(n, logLines.length) + " log lines are in the macro setting §fCopy Log§7: click it, Ctrl+A, Ctrl+C.");
+    } else if (sub === "logchat") {
       const n = Math.max(1, Math.min(100, parseInt(args[1] || "15", 10) || 15));
-      script.chat("§7Last " + n + " of " + logLines.length + " log lines (full copy: polinex/scripts/data/<script>.properties, key 'log'; also latest.log):");
       logLines.slice(-n).forEach((l) => script.chat((/ (WARN|FAIL) /.test(l) ? "§e" : "§f") + l));
     } else if (sub === "clearlog") {
       logLines.length = 0;
@@ -722,8 +790,8 @@ try {
       st.warps.filter((w) => w.problems.length).slice(0, 12).forEach((w) => script.chat("§7#" + w.number + " " + U.fmt(w.pos) + ": §e" + w.problems.join(", ")));
     }
   }, {
-    description: "Gemstone Route Setup: status | log [n] | clearlog | managers | fix | lobby | reset",
-    suggest: ["status", "log", "clearlog", "managers", "fix", "lobby", "reset"],
+    description: "Gemstone Route Setup: status | log [n] | logchat [n] | clearlog | managers | fix | lobby | reset",
+    suggest: ["status", "log", "logchat", "clearlog", "managers", "fix", "lobby", "reset"],
     dotOnly: true,
   });
 } catch (e) {

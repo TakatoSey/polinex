@@ -48,10 +48,28 @@ Input.prototype.tick = function () {
 // Get onto a spot WITHOUT wobbling (the W S W S / A D A D problem): crouch-walk, tap the keys once close
 // (like tapping W), and after an overshoot wait until standing still instead of reversing at once.
 // Returns true when within `tol` (and releases the keys).
+// Turn (yaw only, level look) toward where we walk, like a player does. True once roughly facing it.
+Input.prototype.face = function (target) {
+  const p = player.pos();
+  const dx = target.x - p.x, dz = target.z - p.z;
+  if (dx * dx + dz * dz < 0.25) return true;
+  const want = Math.atan2(-dx, dz) * 180 / Math.PI;
+  let diff = Math.abs(((want - player.yaw()) % 360 + 540) % 360 - 180);
+  if (diff < 35) return true;
+  if (!this.faceAt || U.now() - this.faceAt > 400) {
+    const e = world.eyePos();
+    rotation.pathFindRotateToVec(target.x, e.y - 0.4, target.z);
+    this.faceAt = U.now();
+  }
+  return false;
+};
+
 Input.prototype.nudge = function (target, tol) {
   const p = player.pos();
   const d = U.distFlat(p, target);
   if (d <= tol) { player.resetWASD(); this.nudgeT = 0; return true; }
+  // more than a step away: face it and walk forward instead of walking backwards / sideways
+  if (d > 1.0 && !this.face(target)) { player.resetWASD(); return false; }
   this.sneak(true);
   const dirX = target.x - p.x, dirZ = target.z - p.z;
   const vx = player.motionX ? player.motionX() : 0, vz = player.motionZ ? player.motionZ() : 0;

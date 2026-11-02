@@ -46,6 +46,7 @@ Mover.prototype.clearState = function () {
   this.digTarget = null;
   this.digFinal = false;
   this.digExhausted = false;
+  this.hopScan = null;
 };
 
 Mover.prototype.cancelQueries = function () {
@@ -97,7 +98,7 @@ Mover.prototype.goTo = function (goal) {
 
   // 2) already walking: retarget the live walk instead of stopping
   if (wasWalking) {
-    const cands = this.candidates();
+    const cands = this.candidates() || [];
     if (cands.length && !this.wantsEther(cands[0])) {
       try {
         if (nav.retarget(cands[0], { keepMoving: true })) {
@@ -146,18 +147,23 @@ Mover.prototype.candidates = function () {
   // Flat goals (inspection): only X/Z matter, the full height is always loaded. Hop horizontally at our
   // own height, never climbing or digging down toward the target's Y.
   if (g.flat && U.distFlat(me, target) > 12) {
+    // one hop distance per tick (each scan reads a few hundred blocks): no lag spike
     const dxz = U.distFlat(me, target);
-    const dir = U.v((target.x - me.x) / dxz, 0, (target.z - me.z) / dxz);
-    const feetY = Math.floor(me.y);
-    const steps = [24, 12]; // two tries per decision keeps a tick light (each scan reads a few hundred blocks)
-    for (let i = 0; i < steps.length; i++) {
-      if (steps[i] >= dxz) continue;
-      const hop = U.floor(U.v(me.x + dir.x * steps[i], feetY, me.z + dir.z * steps[i]));
-      if (!this.ctx.blocks.info(hop).loaded) continue;
-      const c = this.standablesNear(hop, 3, 4, 4); // walking may change height a bit, only digging stays level
-      if (c.length) { this.hop = hop; this.cands = c; return this.cands; }
+    if (!this.hopScan) {
+      this.hopScan = { i: 0, steps: [24, 12], dir: U.v((target.x - me.x) / dxz, 0, (target.z - me.z) / dxz), feetY: Math.floor(me.y), me: me };
     }
-    this.hop = U.floor(U.v(me.x + dir.x * Math.min(dxz, 16), feetY, me.z + dir.z * Math.min(dxz, 16)));
+    const hs = this.hopScan;
+    while (hs.i < hs.steps.length) {
+      const step = hs.steps[hs.i++];
+      if (step >= dxz) continue;
+      const hop = U.floor(U.v(hs.me.x + hs.dir.x * step, hs.feetY, hs.me.z + hs.dir.z * step));
+      if (!this.ctx.blocks.info(hop).loaded) continue;
+      const c = this.standablesNear(hop, 3, 4, g.dyRange || 4);
+      if (c.length) { this.hop = hop; this.cands = c; this.hopScan = null; return this.cands; }
+      return null; // try the next distance next tick
+    }
+    this.hopScan = null;
+    this.hop = U.floor(U.v(me.x + hs.dir.x * Math.min(dxz, 16), hs.feetY, me.z + hs.dir.z * Math.min(dxz, 16)));
     this.cands = [];
     return this.cands;
   }
@@ -391,6 +397,7 @@ Mover.prototype.tickDecide = function () {
   const ctx = this.ctx;
   const g = this.goal;
   const cands = this.candidates();
+  if (cands === null) return { s: "busy" }; // still scanning (spread over ticks)
   if (this.candIdx >= cands.length) {
     // No (more) standable spot: dig toward the hop / the goal itself if allowed.
     if (ctx.cfg.allowDig() && g.allowDig !== false && !this.digExhausted) {
@@ -628,28 +635,8 @@ Mover.prototype.tickDig = function () {
     return this.nextCandidateBusy("digging failed: " + r.reason);
   }
 
-  // Hysteresis: only leave digging for a walking path that is clearly better.
-  if (!this.digFinal && this.cand) {
-    if (this.digQuery && this.digQuery.finished()) {
-      const q = this.digQuery;
-      this.digQuery = null;
-      if (q.status() === "found") {
-        const nodes = U.arr(q.result());
-        const walkLen = this.pathLength(nodes);
-        const remaining = this.digCost(player.blockPos(), this.digGoal(this.cand));
-        if (walkLen < remaining * 0.6 && !this.isDetour(nodes, walkLen) && !this.pathCrossesCore(nodes) && nav.followPath(nodes)) {
-          this.digger.release();
-          this.path = nodes;
-          this.enterWalk();
-          ctx.log("Found a clearly shorter walking path, leaving the tunnel");
-          return { s: "busy" };
-        }
-      }
-    } else if (!this.digQuery && U.now() - this.digCheckAt > 6000) {
-      this.digCheckAt = U.now();
-      this.digQuery = nav.findPathAsync(null, this.cand, { allowEtherwarp: false });
-    }
-  }
+  // Once tunnelling, finish the tunnel: switching to the planner halfway made it leave mining mode and walk
+  // somewhere else. (The planner is only consulted again when the tunnel fails.)
   return { s: "busy" };
 };
 

@@ -35,6 +35,7 @@ function fillBox(x0, y0, z0, x1, y1, z1, id) {
 if (scenarioName !== "far" && scenarioName !== "shaft") fillBox(10, 60, 10, 50, 75, 50, "minecraft:air");
 let warps;
 let startPos = { x: 12.5, y: 60, z: 12.5 };
+const chests = []; // spawned treasure chests {x,y,z,at}
 const lobbyState = { location: "CRYSTAL_HOLLOWS", id: "m12AB", lobbies: 0, fixOn: false };
 if (scenarioName === "basic" || scenarioName === "gem") {
   fillBox(24, 60, 30, 26, 70, 32, "minecraft:stone"); // pillar between warps
@@ -94,6 +95,17 @@ if (scenarioName === "basic" || scenarioName === "gem") {
   if (scenarioName === "midline") fillBox(12, 59, 10, 46, 59, 11, "minecraft:stone"); // walkway along the cave wall
   startPos = { x: 13.5, y: 60, z: 13.5 };
   warps = [{ number: 1, x: 15, y: 60, z: 15 }, { number: 2, x: 42, y: 60, z: 15 }];
+} else if (scenarioName === "nucleus") {
+  // start inside the "Crystal Nucleus" box (x/z 0..20): nothing may be mined there; a corridor leads out east
+  fillBox(2, 60, 2, 18, 64, 18, "minecraft:air");      // nucleus room
+  fillBox(18, 60, 9, 30, 61, 10, "minecraft:air");     // exit corridor
+  fillBox(30, 60, 5, 45, 64, 25, "minecraft:air");     // cave with the route
+  startPos = { x: 5.5, y: 60, z: 5.5 };
+  warps = [{ number: 1, x: 36, y: 60, z: 10 }, { number: 2, x: 40, y: 60, z: 20 }];
+} else if (scenarioName === "chest") {
+  fillBox(56, 60, 20, 60, 62, 24, "minecraft:air");
+  startPos = { x: 58.5, y: 60, z: 22.5 };
+  warps = [{ number: 1, x: 20, y: 60, z: 20 }, { number: 2, x: 30, y: 60, z: 30 }];
 } else if (scenarioName === "tunnel") {
   // start in a separate pocket: must dig to reach the cavern
   fillBox(56, 60, 20, 60, 62, 24, "minecraft:air");
@@ -219,6 +231,7 @@ function routeStatus() {
   });
   if ((scenarioName === "lobby" && lobbyState.id === "m12AB") || (scenarioName === "fix" && !lobbyState.fixOn)) ws[1].problems.push("veinMissing");
   if (lobbyState.location !== "CRYSTAL_HOLLOWS") return null;
+  if (scenarioName === "nucleus" && P.x < 20 && P.z < 20) return null; // Route Status is null in the Nucleus
   const unchecked = ws.filter((w) => !w.checked).length;
   const anyProblem = ws.some((w) => w.problems.length);
   const fatal = ws.some((w) => w.problems.indexOf("veinMissing") >= 0);
@@ -257,10 +270,17 @@ const api = {
     selected: () => ({ name: "test_route", route: { waypoints: warps.map((w) => ({ x: w.x, y: w.y, z: w.z, type: "WARP" })) } }),
   },
   skyblock: {
-    location: () => lobbyState.location, scoreboard: () => ["11/02/26 " + lobbyState.id, "Crystal Hollows"], chStructures: () => [],
+    location: () => lobbyState.location,
+    area: () => (scenarioName === "nucleus" && P.x < 20 && P.z < 20 ? "Crystal Nucleus" : "Jungle"), scoreboard: () => ["11/02/26 " + lobbyState.id, "Crystal Hollows"], chStructures: () => [],
     hasMiningTool: () => true, hasEtherwarp: () => false,
   },
-  scan: { codeName: (c) => (c === 0 ? "UNKNOWN" : c === 1 ? "AIR" : "SOLID"), isPassable: (c) => c === 1, isSolid: (c) => c === 2 },
+  scan: {
+    create: () => {
+      let ver = 0, last = "";
+      return { start() {}, stop() {}, version: () => { const k = chests.map((c) => c.x + "," + c.z).join(";"); if (k !== last) { last = k; ver++; } return ver; },
+        nearest: (p) => chests.slice().sort((a, b) => Math.hypot(a.x - p.x, a.z - p.z) - Math.hypot(b.x - p.x, b.z - p.z))[0] || null };
+    },
+    codeName: (c) => (c === 0 ? "UNKNOWN" : c === 1 ? "AIR" : "SOLID"), isPassable: (c) => c === 1, isSolid: (c) => c === 2 },
   world: {
     blockState: (p) => { hostCalls++; if (process.env.PEAK && hostCalls === 1500) console.log("PEAK", state, new Error().stack.split("\n").slice(2, 9).map((l) => l.trim().replace(/\(.*gemstone_route_setup\//, "(")).join(" <- ")); const id = get(p.x, p.y, p.z); return id === null ? null : { id: id, properties: {} }; },
     code: (p) => { hostCalls++; const id = get(p.x, p.y, p.z); return id === null ? 0 : isAir(id) ? 1 : 2; },
@@ -419,6 +439,21 @@ function physics() {
   }
   P.speed = Math.hypot(P.x - before.x, P.z - before.z);
   P.mx = P.x - before.x; P.mz = P.z - before.z;
+  if (scenarioName === "chest" && stats.mined === 8 && !chests.length && !P.chestDone) {
+    const c = { x: Math.floor(P.x), y: Math.floor(P.y), z: Math.floor(P.z) + 1, at: simTime };
+    if (!passable(c.x, c.y, c.z)) c.z -= 2;
+    set(c.x, c.y, c.z, "minecraft:chest"); chests.push(c); P.chestDone = true;
+  }
+  for (let i = chests.length - 1; i >= 0; i--) if (simTime - chests[i].at > 4000) { set(chests[i].x, chests[i].y, chests[i].z, "minecraft:air"); chests.splice(i, 1); }
+  if (chests.length && (P.walkTo || walk || P.keys.attack)) stats.busyDuringChest = (stats.busyDuringChest || 0) + 1;
+  // facing vs moving: walking backwards / sideways (camera not turned toward where we walk)
+  if (P.look && P.speed > 0.08 && P.walkTo && !walk) {
+    const hl = Math.hypot(P.look.x, P.look.z) || 1;
+    const dot = (P.mx * P.look.x / hl + P.mz * P.look.z / hl) / P.speed;
+    if (dot < -0.5) stats.backwardTicks = (stats.backwardTicks || 0) + 1;
+    else if (Math.abs(dot) < 0.35) stats.sidewaysTicks = (stats.sidewaysTicks || 0) + 1;
+  }
+  if (scenarioName === "nucleus" && P.x < 20 && P.z < 20 && P.keys.attack) stats.miningInNucleus = (stats.miningInNucleus || 0) + 1;
   // jump + gravity
   if (P.jumpT > 0) {
     if (P.jumpT > 3 && passable(P.x, P.y + 2.1, P.z)) P.y += process.env.JUMPBOOST ? 0.6 : 0.3;
@@ -461,6 +496,15 @@ function physics() {
   }
 }
 
+// count EVERY host call (all namespaces) per tick, and remember the heaviest tick's breakdown
+let allCalls = 0, maxAll = 0, perFn = {}, worstFns = null, worstState = "";
+["world", "mining", "nav", "player", "rotation", "etherwarp", "skyblock", "routes", "inventory", "scan"].forEach((ns) => {
+  Object.keys(api[ns]).forEach((fnName) => {
+    const f = api[ns][fnName];
+    if (typeof f !== "function") return;
+    api[ns][fnName] = function () { allCalls++; const k = ns + "." + fnName; perFn[k] = (perFn[k] || 0) + 1; return f.apply(this, arguments); };
+  });
+});
 // ---------------------------------------------------------------- load the script
 function loadModule(file, cache) {
   const full = path.join(SCRIPT_DIR, file.replace(/^\.\//, "").replace(/(\.js)?$/, ".js"));
@@ -491,7 +535,9 @@ for (; t < MAX && running; t++) {
   (hooks.tick || []).forEach((fn) => fn());
   const fn = handle.states[state];
   hostCalls = 0;
+  allCalls = 0; perFn = {};
   if (fn) fn();
+  if (allCalls > maxAll) { maxAll = allCalls; worstFns = perFn; worstState = state + "/" + (DEBUG.ctx ? DEBUG.ctx.detail : ""); }
   if (hostCalls > maxCallsTick) maxCallsTick = hostCalls;
   totalCalls += hostCalls;
   // W/S or A/D reversals between consecutive ticks (the "w s w s" wobble)
@@ -539,6 +585,8 @@ console.log(log.filter((l) => !/^\[log\] (Digging|Sent)/.test(l)).slice(-60).joi
 console.log("----");
 console.log("scenario:", scenarioName, "ticks:", t, "final state:", state, "fail:", failReason);
 console.log("route status:", st.verdict, "setUp:", st.setUp, JSON.stringify(st.warps.map((w) => [w.number, w.problems])));
+stats.maxCallsPerTick = maxAll;
+if (process.env.WORST) console.log("WORST", worstState, JSON.stringify(Object.entries(worstFns || {}).sort((x, y) => y[1] - x[1]).slice(0, 6)));
 stats.maxBlockReadsPerTick = maxCallsTick; stats.avgBlockReadsPerTick = Math.round(totalCalls / Math.max(1, t)); stats.keyFlips = keyFlips;
 console.log("stats:", JSON.stringify(stats), "inv:", JSON.stringify(inv));
 console.log("HUD:\n  " + handle.huds.map((h) => h()).join("\n  "));
