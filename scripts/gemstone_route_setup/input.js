@@ -45,6 +45,24 @@ Input.prototype.tick = function () {
   this.applySneak();
 };
 
+// Get onto a spot WITHOUT wobbling (the W S W S / A D A D problem): crouch-walk, tap the keys once close
+// (like tapping W), and after an overshoot wait until standing still instead of reversing at once.
+// Returns true when within `tol` (and releases the keys).
+Input.prototype.nudge = function (target, tol) {
+  const p = player.pos();
+  const d = U.distFlat(p, target);
+  if (d <= tol) { player.resetWASD(); this.nudgeT = 0; return true; }
+  this.sneak(true);
+  const dirX = target.x - p.x, dirZ = target.z - p.z;
+  const vx = player.motionX ? player.motionX() : 0, vz = player.motionZ ? player.motionZ() : 0;
+  const movingAway = vx * dirX + vz * dirZ < -0.0005; // overshot: let it settle, do not reverse immediately
+  if (movingAway && Math.sqrt(vx * vx + vz * vz) > 0.01) { player.resetWASD(); return false; }
+  this.nudgeT = (this.nudgeT || 0) + 1;
+  if (d < 0.6 && this.nudgeT % 3 !== 1) { player.resetWASD(); return false; } // close: tap, 1 tick on / 2 off
+  player.setOptimalKeysTo(target.x, target.y, target.z, true);
+  return false;
+};
+
 Input.prototype.release = function () {
   if (this.jumpDown) player.setKey("jump", false);
   this.jumpDown = false;

@@ -148,10 +148,8 @@ Placer.prototype.pillarTick = function (cell) {
     if (!rotation.generalIsDone() && U.now() - c.at < 1500) return { s: "busy" };
     // be exactly on the centre before jumping, so we land back on top of the new block (jump boost jumps higher)
     const cc = U.v(c0.x + 0.5, c0.y, c0.z + 0.5);
-    if (player.onGround() && U.distFlat(player.pos(), cc) > 0.15) {
-      ctx.input.sneak(true);
-      player.setOptimalKeysTo(cc.x, cc.y, cc.z, true);
-      if (U.now() - c.at > 4000) return this.fail("could not centre on " + U.fmt(c0) + " for pillar placement", true);
+    if (player.onGround() && !ctx.input.nudge(cc, 0.2)) {
+      if (U.now() - c.at > 5000) return this.fail("could not centre on " + U.fmt(c0) + " for pillar placement", true);
       return { s: "busy" };
     }
     if (!player.onGround() || player.speed() > 0.01) { player.resetWASD(); return { s: "busy" }; } // stand still first

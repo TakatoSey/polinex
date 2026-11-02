@@ -149,12 +149,12 @@ Mover.prototype.candidates = function () {
     const dxz = U.distFlat(me, target);
     const dir = U.v((target.x - me.x) / dxz, 0, (target.z - me.z) / dxz);
     const feetY = Math.floor(me.y);
-    const steps = [32, 20, 10];
+    const steps = [24, 12]; // two tries per decision keeps a tick light (each scan reads a few hundred blocks)
     for (let i = 0; i < steps.length; i++) {
       if (steps[i] >= dxz) continue;
       const hop = U.floor(U.v(me.x + dir.x * steps[i], feetY, me.z + dir.z * steps[i]));
       if (!this.ctx.blocks.info(hop).loaded) continue;
-      const c = this.standablesNear(hop, 4, 4, 8); // walking may change height freely, only digging stays level
+      const c = this.standablesNear(hop, 3, 4, 4); // walking may change height a bit, only digging stays level
       if (c.length) { this.hop = hop; this.cands = c; return this.cands; }
     }
     this.hop = U.floor(U.v(me.x + dir.x * Math.min(dxz, 16), feetY, me.z + dir.z * Math.min(dxz, 16)));
@@ -181,7 +181,7 @@ Mover.prototype.candidates = function () {
     return this.cands;
   }
   this.cands = this.standablesNear(target, near, 6);
-  if (!this.cands.length && near < 6) this.cands = this.standablesNear(target, 6, 6);
+  if (!this.cands.length && near < 5) this.cands = this.standablesNear(target, 5, 6, 3);
   return this.cands;
 };
 
@@ -264,6 +264,7 @@ Mover.prototype.digCost = function (fromFeet, toFeet) {
       }
     }
   }
+  this.lastDigSolid = solid;
   const avg = solid ? (solid <= 3 ? breakTicks / solid : breakTicks / 3) : 0;
   return len + (solid * (avg + 6)) / WALK_TICKS_PER_BLOCK; // +6 ticks per block for aiming / swaps
 };
@@ -293,7 +294,10 @@ Mover.prototype.isDetour = function (nodes, walkLen) {
   const me = player.pos();
   const end = nodes.length ? U.v(nodes[nodes.length - 1].x, nodes[nodes.length - 1].y, nodes[nodes.length - 1].z) : me;
   const straight = this.goal && this.goal.flat ? U.distFlat(me, end) : U.dist(me, end);
-  if (walkLen > straight * ctx.cfg.directFactor() + 3) return true;
+  // only a real detour counts (both much longer in ratio AND at least 8 blocks extra) and only when the straight
+  // line actually needs mining (open cave: the planner walks around a gap for a reason, follow it)
+  if ((this.lastDigSolid || 0) < 2) return false;
+  if (walkLen > straight * ctx.cfg.directFactor() + 3 && walkLen - straight > 8) return true;
   const goal = this.goal ? this.goal.pos : end;
   const gx = goal.x - me.x, gz = goal.z - me.z;
   const gl = Math.sqrt(gx * gx + gz * gz);
@@ -374,12 +378,12 @@ Mover.prototype.tick = function () {
 
 Mover.prototype.tickSettle = function () {
   const top = U.top(this.cand);
-  if (U.distFlat(player.pos(), top) < 0.25 || U.now() - this.settleAt > 2000) {
+  if (this.ctx.input.nudge(top, 0.3) || U.now() - this.settleAt > 2500) {
     player.resetWASD();
+    this.ctx.input.sneak(false);
     this.mode = "done"; // the caller re-checks whether it can act from here and relocates if not
     return { s: "arrived" };
   }
-  player.setOptimalKeysTo(top.x, top.y, top.z, true);
   return { s: "busy" };
 };
 

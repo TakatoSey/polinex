@@ -231,6 +231,7 @@ m.onDeath(() => { releaseAll(); setStage("GRS_WAIT_WORLD"); });
 
 // Failsafe/break pause: the engine stops ticking states, so make sure nothing stays held.
 on("tick", () => {
+  ctx.tickNo = (ctx.tickNo || 0) + 1; // new block-read cache every tick
   if (logDirty && U.now() - logSavedAt > 5000) flushLog();
   ctx.input.tick();
   ctx.mover.digger.watchdog();

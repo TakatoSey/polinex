@@ -102,17 +102,24 @@ if (scenarioName === "basic" || scenarioName === "gem") {
 }
 
 // ---------------------------------------------------------------- DDA voxel ray
+// exact voxel traversal (Amanatides & Woo): every cell the segment a->b passes through, in order
 function ray(a, b) {
   const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
-  const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
-  const steps = Math.max(1, Math.ceil(len * 20));
-  const cells = [];
-  let last = null;
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps;
-    const p = { x: a.x + dx * t, y: a.y + dy * t, z: a.z + dz * t };
-    const k = K(p.x, p.y, p.z);
-    if (k !== last) { cells.push({ cell: { x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) }, at: p }); last = k; }
+  let x = Math.floor(a.x), y = Math.floor(a.y), z = Math.floor(a.z);
+  const ex = Math.floor(b.x), ey = Math.floor(b.y), ez = Math.floor(b.z);
+  const sx = Math.sign(dx), sy = Math.sign(dy), sz = Math.sign(dz);
+  const tdx = sx ? Math.abs(1 / dx) : Infinity, tdy = sy ? Math.abs(1 / dy) : Infinity, tdz = sz ? Math.abs(1 / dz) : Infinity;
+  let tmx = sx ? ((sx > 0 ? x + 1 - a.x : a.x - x) * tdx) : Infinity;
+  let tmy = sy ? ((sy > 0 ? y + 1 - a.y : a.y - y) * tdy) : Infinity;
+  let tmz = sz ? ((sz > 0 ? z + 1 - a.z : a.z - z) * tdz) : Infinity;
+  const cells = [{ cell: { x, y, z }, at: { x: a.x, y: a.y, z: a.z } }];
+  for (let i = 0; i < 4000 && !(x === ex && y === ey && z === ez); i++) {
+    let t;
+    if (tmx <= tmy && tmx <= tmz) { t = tmx; x += sx; tmx += tdx; }
+    else if (tmy <= tmz) { t = tmy; y += sy; tmy += tdy; }
+    else { t = tmz; z += sz; tmz += tdz; }
+    if (t > 1) break;
+    cells.push({ cell: { x, y, z }, at: { x: a.x + dx * t, y: a.y + dy * t, z: a.z + dz * t } });
   }
   return cells;
 }
@@ -141,6 +148,7 @@ const pendingBombs = [];
 const log = [];
 let stats = { mined: 0, placed: 0, bombs: 0, cmds: [], diagDownSteps: 0, inspectVerticalSteps: 0, inspectMinZ: 999, shaftSteps: 0, movedWhileMiningDown: 0, axisChanges: 0, attackPresses: 0, clicks: 0, floorMined: 0, turnDeg: 0, etherwarps: 0, placedDuringInspect: 0, gemsLeftNearRoute: 0 };
 let lastAxis = null, lastAttack = false;
+let hostCalls = 0, maxCallsTick = 0, totalCalls = 0, keyFlips = 0, lastKeys = "";
 const hist = [];
 const seenSteps = new Set();
 
@@ -180,6 +188,7 @@ function lookAt(x, y, z) {
   if (P.look) stats.turnDeg += Math.acos(Math.max(-1, Math.min(1, nd.x * P.look.x + nd.y * P.look.y + nd.z * P.look.z))) * 180 / Math.PI;
   if (process.env.PITCH && (state === "GRS_INSPECT" || process.env.PITCH === "all")) {
     const pitch = -Math.asin(nd.y) * 180 / Math.PI, yaw = Math.atan2(-nd.x, nd.z) * 180 / Math.PI;
+    if (process.env.AIMDBG && DEBUG.ctx) console.log("AIMDBG act", JSON.stringify(DEBUG.ctx.builder.act && DEBUG.ctx.builder.act.explicitAim), "minerAim", JSON.stringify(DEBUG.ctx.miner.cur && DEBUG.ctx.miner.cur.aim), "stack", new Error().stack.split("\n").slice(3, 6).map((l) => l.trim().replace(/\(.*gemstone_route_setup\//, "(")).join(" <- "));
     const stp = DEBUG.ctx && DEBUG.ctx.mover.digger.step; console.log("LOOK yaw " + yaw.toFixed(0) + " pitch " + pitch.toFixed(0) + " P " + P.x.toFixed(2) + " aimpt " + [x, y, z].map((q) => q.toFixed(2)).join(",") + " stepAims " + (stp && stp.aims ? JSON.stringify(stp.aims) : "-") + " clear " + (stp ? JSON.stringify(stp.clear) : "-"));
   }
   P.look = nd;
@@ -253,8 +262,8 @@ const api = {
   },
   scan: { codeName: (c) => (c === 0 ? "UNKNOWN" : c === 1 ? "AIR" : "SOLID"), isPassable: (c) => c === 1, isSolid: (c) => c === 2 },
   world: {
-    blockState: (p) => { const id = get(p.x, p.y, p.z); return id === null ? null : { id: id, properties: {} }; },
-    code: (p) => { const id = get(p.x, p.y, p.z); return id === null ? 0 : isAir(id) ? 1 : 2; },
+    blockState: (p) => { hostCalls++; if (process.env.PEAK && hostCalls === 1500) console.log("PEAK", state, new Error().stack.split("\n").slice(2, 9).map((l) => l.trim().replace(/\(.*gemstone_route_setup\//, "(")).join(" <- ")); const id = get(p.x, p.y, p.z); return id === null ? null : { id: id, properties: {} }; },
+    code: (p) => { hostCalls++; const id = get(p.x, p.y, p.z); return id === null ? 0 : isAir(id) ? 1 : 2; },
     eyePos: () => eye(),
     raytraceFrom: raytraceFrom,
     raytrace: (to) => raytraceFrom(eye(), to),
@@ -385,14 +394,28 @@ function physics() {
       else { P.x += dx / d * 0.25; P.z += dz / d * 0.25; }
     }
   }
-  // digger walking via setOptimalKeysTo
+  // key walking (setOptimalKeysTo) WITH momentum like Minecraft: acceleration, friction, slower when crouching.
+  // Held keys stay held until released, so a script that centres too tightly overshoots and wobbles (W S W S).
+  P.vx = P.vx || 0; P.vz = P.vz || 0;
   if (P.walkTo) {
     const t = P.walkTo;
     const dx = t.x - P.x, dz = t.z - P.z, d = Math.hypot(dx, dz);
-    const nx = d < 0.25 ? t.x : P.x + dx / d * 0.25, nz = d < 0.25 ? t.z : P.z + dz / d * 0.25;
-    const ty = Math.floor(t.y), cy = Math.floor(P.y);
-    if (passable(nx, cy, nz) && passable(nx, cy + 1, nz)) { P.x = nx; P.z = nz; }          // walk at current height (drops fall)
-    else if (ty === cy + 1 && passable(nx, ty, nz) && passable(nx, ty + 1, nz) && passable(P.x, cy + 2, P.z)) { P.x = nx; P.z = nz; P.y = ty; } // step up
+    if (d > 0.001) { const acc = P.sneak ? 0.04 : 0.1; P.vx += dx / d * acc; P.vz += dz / d * acc; }
+  }
+  if (P.walkTo) {
+    if (P.pvx && P.vx && Math.sign(P.pvx) !== Math.sign(P.vx) && Math.abs(P.vx) > 0.01) stats.velFlips = (stats.velFlips || 0) + 1;
+    if (P.pvz && P.vz && Math.sign(P.pvz) !== Math.sign(P.vz) && Math.abs(P.vz) > 0.01) stats.velFlips = (stats.velFlips || 0) + 1;
+  }
+  P.pvx = P.vx; P.pvz = P.vz;
+  P.vx *= 0.55; P.vz *= 0.55;
+  if (Math.abs(P.vx) < 0.003) P.vx = 0;
+  if (Math.abs(P.vz) < 0.003) P.vz = 0;
+  if (P.vx || P.vz) {
+    const nx = P.x + P.vx, nz = P.z + P.vz, cy = Math.floor(P.y);
+    const ty = P.walkTo ? Math.floor(P.walkTo.y) : cy;
+    if (passable(nx, cy, nz) && passable(nx, cy + 1, nz)) { P.x = nx; P.z = nz; }
+    else if (ty === cy + 1 && passable(nx, ty, nz) && passable(nx, ty + 1, nz) && passable(P.x, cy + 2, P.z)) { P.x = nx; P.z = nz; P.y = ty; }
+    else { P.vx = 0; P.vz = 0; }
   }
   P.speed = Math.hypot(P.x - before.x, P.z - before.z);
   P.mx = P.x - before.x; P.mz = P.z - before.z;
@@ -467,7 +490,14 @@ for (; t < MAX && running; t++) {
   simTime += 50;
   (hooks.tick || []).forEach((fn) => fn());
   const fn = handle.states[state];
+  hostCalls = 0;
   if (fn) fn();
+  if (hostCalls > maxCallsTick) maxCallsTick = hostCalls;
+  totalCalls += hostCalls;
+  // W/S or A/D reversals between consecutive ticks (the "w s w s" wobble)
+  const kk = (P.walkTo ? Math.sign(P.walkTo.x - P.x) + "," + Math.sign(P.walkTo.z - P.z) : "");
+  if (kk && lastKeys && kk !== lastKeys && kk.split(",").some((v, i) => Number(v) === -Number(lastKeys.split(",")[i]) && v !== "0")) keyFlips++;
+  lastKeys = kk;
   physics();
   if (DEBUG.ctx) {
     const st0 = DEBUG.ctx.mover.digger.step;
@@ -509,6 +539,7 @@ console.log(log.filter((l) => !/^\[log\] (Digging|Sent)/.test(l)).slice(-60).joi
 console.log("----");
 console.log("scenario:", scenarioName, "ticks:", t, "final state:", state, "fail:", failReason);
 console.log("route status:", st.verdict, "setUp:", st.setUp, JSON.stringify(st.warps.map((w) => [w.number, w.problems])));
+stats.maxBlockReadsPerTick = maxCallsTick; stats.avgBlockReadsPerTick = Math.round(totalCalls / Math.max(1, t)); stats.keyFlips = keyFlips;
 console.log("stats:", JSON.stringify(stats), "inv:", JSON.stringify(inv));
 console.log("HUD:\n  " + handle.huds.map((h) => h()).join("\n  "));
 process.exit(st.setUp || process.env.EXPECT_FAIL ? 0 : 1);

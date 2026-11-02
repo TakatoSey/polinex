@@ -63,10 +63,24 @@ Miner.prototype.guard = function (allowed) {
 // that needs the smallest rotation from where we look now.
 Miner.prototype.aimPoint = function (b, opts, eye) {
   const reach = this.ctx.cfg.reach() + 0.5;
+  // robust hit: the ray to the point, extended a bit past it, must still hit THIS block first
+  // (a point on an edge makes the real crosshair land on the neighbour block)
+  // ...and so must rays a hair off to each side: a point on an edge/corner is decided by tiny aim errors.
   const hits = (p) => {
     if (U.dist(eye, p) > reach) return false;
-    const h = world.raytraceFrom(eye, p);
-    return !!h.block && U.same(U.floor(h.block), b);
+    const d = U.sub(p, eye), l = Math.sqrt(d.x * d.x + d.y * d.y + d.z * d.z) || 1;
+    const fx = d.x / l, fy = d.y / l, fz = d.z / l;
+    const hl = Math.sqrt(fx * fx + fz * fz) || 1;
+    const side = U.v(-fz / hl, 0, fx / hl); // horizontal, perpendicular to the view
+    const upv = U.v(0, 1, 0);
+    const offs = [U.v(0, 0, 0), U.scale(side, 0.07), U.scale(side, -0.07), U.scale(upv, 0.07), U.scale(upv, -0.07)];
+    for (let i = 0; i < offs.length; i++) {
+      const q = U.add(p, offs[i]);
+      const beyond = U.v(q.x + fx * 0.3, q.y + fy * 0.3, q.z + fz * 0.3);
+      const h = world.raytraceFrom(eye, beyond);
+      if (!h.block || !U.same(U.floor(h.block), b)) return false;
+    }
+    return true;
   };
   if (opts && opts.aim) {
     const sa = U.steadyAim(opts.aim);
@@ -92,7 +106,8 @@ Miner.prototype.aimPoint = function (b, opts, eye) {
   }
   if (best) { const sa = U.steadyAim(best.p); return hits(sa) ? sa : best.p; }
   const vp = mining.visiblePoint(b);
-  return vp ? U.v(vp.x, vp.y, vp.z) : null;
+  // only if the crosshair would really stay on it (an edge sliver is "visible" but the crosshair slips off)
+  return vp && hits(U.v(vp.x, vp.y, vp.z)) ? U.v(vp.x, vp.y, vp.z) : null;
 };
 
 Miner.prototype.tick = function (block, opts) {
@@ -135,6 +150,9 @@ Miner.prototype.tick = function (block, opts) {
   }
 
   if (!c.aim) {
+    // still sliding from walking? wait: an aim chosen while moving is wrong once we stop (crosshair misses)
+    player.resetWASD();
+    if (player.onGround() && player.speed() > 0.02 && c.ticks < 20) return { s: "busy" };
     c.aim = this.aimPoint(b, o, eye);
     if (!c.aim) {
       const hit = world.raytrace(U.center(b));
@@ -158,7 +176,10 @@ Miner.prototype.tick = function (block, opts) {
     const settled = rotation.miningIsDone() || !rotation.miningIsRotating() || U.now() - c.rotStart > 1500;
     if (settled) {
       if (++c.aimTries > 6) return this.fail("cannot aim at " + U.fmt(b));
-      rotation.miningRotateToVec(c.aim.x, c.aim.y, c.aim.z); // same point again, no random re-aim
+      // recompute from where we stand now (same deterministic rule, not a random point)
+      const again = this.aimPoint(b, o, world.eyePos());
+      if (again) c.aim = again;
+      rotation.miningRotateToVec(c.aim.x, c.aim.y, c.aim.z);
       c.rotStart = U.now();
     }
     return { s: "busy" };

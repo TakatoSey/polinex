@@ -375,7 +375,7 @@ Builder.prototype.linePoint = function (a, b, cell) {
   const len2 = ab.x * ab.x + ab.y * ab.y + ab.z * ab.z || 1;
   const t = Math.max(0, Math.min(1, (ac.x * ab.x + ac.y * ab.y + ac.z * ab.z) / len2));
   const p = U.add(a, U.scale(ab, t));
-  const clamp = (v, lo) => Math.max(lo + 0.05, Math.min(lo + 0.95, v));
+  const clamp = (v, lo) => Math.max(lo + 0.2, Math.min(lo + 0.8, v)); // away from edges: crosshair would slip off
   return U.v(clamp(p.x, cell.x), clamp(p.y, cell.y), clamp(p.z, cell.z));
 };
 

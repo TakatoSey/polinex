@@ -35,26 +35,34 @@ Blocks.prototype.compilePatterns = function () {
 };
 
 // Returns { loaded, id, air, liquid, gem, passable, solid }.
+// Blocks you walk through (no collision). Everything else that is not air/liquid counts as solid.
+const PASSABLE = /(^|:)(air|cave_air|void_air|short_grass|tall_grass|grass|fern|large_fern|dead_bush|vine|glow_lichen|hanging_roots|torch|wall_torch|redstone_torch|redstone_wall_torch|soul_torch|soul_wall_torch|snow|rail|powered_rail|detector_rail|activator_rail|lever|tripwire|tripwire_hook|light|structure_void|.*_sapling|.*_button|.*_pressure_plate|.*_sign|.*_wall_sign|.*_banner|.*_wall_banner|dandelion|poppy|blue_orchid|allium|azure_bluet|.*_tulip|oxeye_daisy|cornflower|lily_of_the_valley|brown_mushroom|red_mushroom|sweet_berry_bush|seagrass|tall_seagrass|kelp|kelp_plant|nether_sprouts|crimson_roots|warped_roots)$/;
+
+// One host call per block (blockState), classified by id, cached for the current tick: the same block is
+// read many times per tick by the different planners, and each host call is expensive (this was the lag).
 Blocks.prototype.info = function (p) {
+  const k = Math.floor(p.x) + "," + Math.floor(p.y) + "," + Math.floor(p.z);
+  const tick = this.ctx.tickNo || 0;
+  if (this.cacheTick !== tick) { this.cache = new Map(); this.cacheTick = tick; }
+  const hit = this.cache.get(k);
+  if (hit) return hit;
   let st = null;
   try { st = world.blockState(U.floor(p)); } catch (e) { st = null; }
-  if (!st) return { loaded: false, id: "", air: false, liquid: false, gem: false, passable: false, solid: false };
-  const id = String(st.id);
-  const air = AIR.test(id);
-  const liquid = LIQUID.test(id);
-  let passable = air;
-  let solid = !air && !liquid;
-  if (!air && !liquid) {
-    try {
-      const code = world.code(U.floor(p));
-      if (scan.codeName(code) !== "UNKNOWN") {
-        passable = scan.isPassable(code);
-        solid = scan.isSolid(code);
-      }
-    } catch (e) { /* keep id based guess */ }
+  let r;
+  if (!st) r = { loaded: false, id: "", air: false, liquid: false, gem: false, passable: false, solid: false };
+  else {
+    const id = String(st.id);
+    const air = AIR.test(id);
+    const liquid = LIQUID.test(id);
+    const passable = air || (!liquid && PASSABLE.test(id));
+    r = { loaded: true, id: id, air: air, liquid: liquid, gem: GEM.test(id), passable: passable, solid: !passable && !liquid };
   }
-  return { loaded: true, id: id, air: air, liquid: liquid, gem: GEM.test(id), passable: passable && !liquid, solid: solid };
+  this.cache.set(k, r);
+  return r;
 };
+
+// Forget cached reads (after we changed a block ourselves this tick).
+Blocks.prototype.invalidate = function () { this.cacheTick = -1; };
 
 Blocks.prototype.isCobble = function (id) { return /(^|:)cobblestone$/.test(id); };
 
@@ -76,7 +84,8 @@ Blocks.prototype.mineBlockReason = function (p, opts) {
   if (ALWAYS_PROTECTED.test(id)) return "unbreakable " + id;
   const bl = this.blacklist.get(U.key(p));
   if (bl) return "blacklisted: " + bl;
-  if (i.gem && !(opts && opts.allowGem)) return "protected gemstone " + id;
+  // gems are just blocks when building a route (they regrow); only protected if the user turns that on
+  if (i.gem && this.ctx.cfg.protectGems() && !(opts && opts.allowGem)) return "protected gemstone " + id;
   if (this.isCobble(id) && !this.ourCobble.has(U.key(p))) return "foreign cobblestone (someone's route)";
   // our own placed blocks (waypoints, blocks under them, support) are never mined by movement/tunnelling;
   // only the support cleanup and line clearing remove them, explicitly

@@ -56,7 +56,7 @@ Digger.prototype.driveTick = function (s) {
   }
   if (!rotation.miningIsDone() && rotation.miningIsRotating() && U.now() - this.lookAt < 1500) return { s: "busy" };
 
-  if (!this.sneaking) { this.ctx.input.sneak(true); this.sneaking = true; }
+  this.ctx.input.sneak(true); this.sneaking = true;
   const solid = s.clear.filter((c) => !ctx.blocks.info(c).passable);
   if (!solid.length) {
     if (s.vertical) ctx.miner.release(); else ctx.miner.guard(s.holdNext);
@@ -77,7 +77,7 @@ Digger.prototype.driveTick = function (s) {
   if (!holding && stalled > 700) {
     // crosshair is not on the block: we are off-centre (e.g. pushed). Shuffle back to the cell centre, crouched.
     const c = U.v(s.from.x + 0.5, s.from.y, s.from.z + 0.5);
-    if (U.distFlat(player.pos(), c) > 0.2) { player.setOptimalKeysTo(c.x, c.y, c.z, true); return { s: "busy" }; }
+    if (!ctx.input.nudge(c, 0.3)) return { s: "busy" };
   }
   player.resetWASD(); // standing still while the block breaks (no wall kissing)
   if (stalled > 3000 && !s.relooked) { s.relooked = true; this.lookKey = null; } // one fresh look, never a sweep
@@ -187,7 +187,10 @@ Digger.prototype.planStep = function (feet, t, flat) {
     let step;
     // face of a cell that looks back at us (fixed aim point, same yaw for the whole tunnel)
     const face = (cell, yOff) => U.v(cell.x + 0.5 - h.x * 0.49, cell.y + (yOff === undefined ? 0.5 : yOff), cell.z + 0.5 - h.z * 0.49);
-    if (dy >= 1) {
+    // climb only when it is really needed: >= 2 higher, or 1 higher and we are already there horizontally
+    // (a 1 block difference is within reach anyway; climbing early meant looking up + jumping for nothing)
+    const horizLeft = Math.abs(dx) + Math.abs(dz);
+    if (dy >= 2 || (dy >= 1 && horizLeft <= 1)) {
       const above = U.up(feet, 2);
       step = { clear: [above, U.up(n, 2), U.up(n, 1)], feet: U.up(n, 1), supportCell: n, up: true,
         aims: [U.v(above.x + 0.5 + h.x * 0.3, above.y + 0.01, above.z + 0.5 + h.z * 0.3), face(U.up(n, 2)), face(U.up(n, 1))] };
@@ -286,14 +289,11 @@ Digger.prototype.tick = function (targetFeet, arrive, flat) {
   // so first centre on the block, wait until we are standing still, and never press a key while mining.
   if (s.phase === "center") {
     const c = U.v(s.from.x + 0.5, s.from.y, s.from.z + 0.5);
-    const off = U.distFlat(player.pos(), c);
-    if (off > 0.15) {
-      if (!this.sneaking) { this.ctx.input.sneak(true); this.sneaking = true; } // slow, precise steps, no edge slips
-      player.setOptimalKeysTo(c.x, c.y, c.z, true);
-      if (U.now() - s.started > 4000) return this.badStep("could not centre for digging down");
+    this.sneaking = true; // nudge crouches: slow, precise steps, no edge slips
+    if (!this.ctx.input.nudge(c, 0.2)) {
+      if (U.now() - s.started > 5000) return this.badStep("could not centre for digging down");
       return { s: "busy" };
     }
-    player.resetWASD();
     if (player.speed() > 0.01 || !player.onGround()) return { s: "busy" }; // let the momentum die
     s.phase = "clear";
     return { s: "busy" };
@@ -380,9 +380,16 @@ Digger.prototype.tick = function (targetFeet, arrive, flat) {
     // crouch-walk (cannot slide off an edge), except when this step is a deliberate drop
     if (s.drop && this.sneaking) { this.ctx.input.sneak(false); this.sneaking = false; }
     else if (!s.drop && !s.up && !this.sneaking) { this.ctx.input.sneak(true); this.sneaking = true; }
-    player.setOptimalKeysTo(goal.x, goal.y, goal.z, true);
+    // walk in normally, but the last bit is tapped so we never overshoot and walk back (W S W S)
+    if (s.drop || s.up || U.distFlat(player.pos(), goal) > 0.6) player.setOptimalKeysTo(goal.x, goal.y, goal.z, true);
+    else ctx.input.nudge(goal, 0.35);
     // step up: one real jump-key press from the ground when we touch the step (never a scripted jump)
-    if (s.up && player.onGround() && U.distFlat(player.pos(), goal) < 1.3) ctx.input.jump();
+    if (s.up && player.onGround() && U.distFlat(player.pos(), goal) < 1.3 && (!s.lastJump || U.now() - s.lastJump > 700)) {
+      if ((s.jumps || 0) >= 2) return this.badStep("could not step up onto " + U.fmt(s.feet) + " (2 jumps)"); // no jump spam
+      ctx.input.jump();
+      s.jumps = (s.jumps || 0) + 1;
+      s.lastJump = U.now();
+    }
     if (U.now() - s.walkStart > 6000) return this.badStep("could not step into " + U.fmt(s.feet));
     return { s: "busy" };
   }
