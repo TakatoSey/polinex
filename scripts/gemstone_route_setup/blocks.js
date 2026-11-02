@@ -8,6 +8,9 @@ const ALWAYS_PROTECTED = /(^|:)(bedrock|barrier|command_block|structure_block|li
 const GEM = /stained_glass/; // gemstone blocks and gemstone panes
 const LIQUID = /(^|:)(water|lava|bubble_column)$/;
 const AIR = /(^|:)(air|cave_air|void_air)$/;
+// The Crystal Nucleus: nothing can be mined inside it (minX, minY, minZ, maxX, maxY, maxZ).
+const NUCLEUS_BOX = [475, 63, 476, 549, 170, 522];
+
 const CORE_STRUCTURES = /goblin.?queen|queen'?s.?den|jungle.?temple/i;
 
 function Blocks(ctx) {
@@ -64,6 +67,12 @@ Blocks.prototype.info = function (p) {
 // Forget cached reads (after we changed a block ourselves this tick).
 Blocks.prototype.invalidate = function () { this.cacheTick = -1; };
 
+Blocks.prototype.nucleusBox = function () { return this.ctx.nucleusBox || NUCLEUS_BOX; };
+Blocks.prototype.inNucleusBox = function (p) {
+  const b = this.nucleusBox();
+  return p.x >= b[0] && p.x < b[3] + 1 && p.y >= b[1] && p.y < b[4] + 1 && p.z >= b[2] && p.z < b[5] + 1;
+};
+
 Blocks.prototype.isCobble = function (id) { return /(^|:)cobblestone$/.test(id); };
 
 // Can we stand with feet at `feet`? (solid support, two passable cells, no liquid)
@@ -80,7 +89,7 @@ Blocks.prototype.mineBlockReason = function (p, opts) {
   if (!i.loaded) return "unknown terrain (not loaded)";
   if (i.air) return null;
   if (i.liquid) return "liquid";
-  if (this.ctx.inNucleus) return "Crystal Nucleus (nothing can be mined there)";
+  if (this.ctx.inNucleus || this.inNucleusBox(p)) return "Crystal Nucleus (nothing can be mined there)";
   const id = i.id.toLowerCase();
   if (ALWAYS_PROTECTED.test(id)) return "unbreakable " + id;
   const bl = this.blacklist.get(U.key(p));

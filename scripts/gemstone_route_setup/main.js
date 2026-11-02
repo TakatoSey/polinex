@@ -272,7 +272,11 @@ on("chatReceive", (message) => {
 
 on("tick", () => {
   ctx.tickNo = (ctx.tickNo || 0) + 1; // new block-read cache every tick
-  if (ctx.tickNo % 10 === 0) { try { ctx.inNucleus = /nucleus/i.test(String(skyblock.area())); } catch (e) { ctx.inNucleus = false; } }
+  if (ctx.tickNo % 5 === 0) {
+    let area = false;
+    try { area = /nucleus/i.test(String(skyblock.area())); } catch (e) { area = false; }
+    ctx.inNucleus = area || ctx.blocks.inNucleusBox(player.pos());
+  }
   chestWatch();
   if (logDirty && U.now() - logSavedAt > 5000) flushLog();
   ctx.input.tick();
@@ -327,8 +331,8 @@ m.onState("GRS_INIT", () => {
 });
 
 // After /warp cn you stand in the Crystal Nucleus, where nothing can be mined: WALK out (pathfinder only, no
-// digging, no Etherwarp), toward the route first, then the four directions out of the Nucleus.
-const NUCLEUS_CENTER = { x: 513, z: 513 }; // the Crystal Hollows span x/z 202..823, the Nucleus sits in the middle
+// digging, no Etherwarp) to just outside the Nucleus box, the side facing the route first.
+// exits: just outside each side of the Nucleus box (x 475..549, z 476..522), at our height
 function nucleusExit() {
   const rt = S.runtimeRoute(run.managerId);
   if (!rt || !rt.waypoints.length) { fail("No Gemstone Macro route is selected."); return; }
@@ -336,8 +340,12 @@ function nucleusExit() {
     let near = rt.waypoints[0], nd = Infinity;
     rt.waypoints.forEach((w) => { const d = U.dist(player.pos(), w); if (d < nd) { nd = d; near = w; } });
     const y = Math.floor(player.y());
-    run.nuc = { idx: 0, targets: [U.v(near.x, near.y, near.z)].concat([[1, 0], [-1, 0], [0, 1], [0, -1]].map((d) =>
-      U.v(NUCLEUS_CENTER.x + d[0] * 75, y, NUCLEUS_CENTER.z + d[1] * 75))) };
+    const b = ctx.blocks.nucleusBox();
+    const cx = (b[0] + b[3]) / 2, cz = (b[2] + b[5]) / 2, m = 12;
+    const exits = [U.v(b[3] + m, y, cz), U.v(b[0] - m, y, cz), U.v(cx, y, b[5] + m), U.v(cx, y, b[2] - m)];
+    // try the exit on the side of the route first
+    exits.sort((p, q) => U.distFlat(p, near) - U.distFlat(q, near));
+    run.nuc = { idx: 0, targets: exits };
   }
   if (run.nuc.idx >= run.nuc.targets.length) {
     fail("Could not walk out of the Crystal Nucleus in any direction. Walk out once by hand, then start again.");

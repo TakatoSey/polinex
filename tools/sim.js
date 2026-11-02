@@ -271,7 +271,7 @@ const api = {
   },
   skyblock: {
     location: () => lobbyState.location,
-    area: () => (scenarioName === "nucleus" && P.x < 20 && P.z < 20 ? "Crystal Nucleus" : "Jungle"), scoreboard: () => ["11/02/26 " + lobbyState.id, "Crystal Hollows"], chStructures: () => [],
+    area: () => "Jungle", /* detection must work from the Nucleus box alone */ scoreboard: () => ["11/02/26 " + lobbyState.id, "Crystal Hollows"], chStructures: () => [],
     hasMiningTool: () => true, hasEtherwarp: () => false,
   },
   scan: {
@@ -532,6 +532,8 @@ function loadModule(file, cache) {
   return mod.exports;
 }
 loadModule("main.js", {});
+// the nucleus scenario's "Crystal Nucleus" box (the real one is x 475..549, y 63..170, z 476..522)
+if (scenarioName === "nucleus") DEBUG.ctx.nucleusBox = [0, 40, 0, 19, 100, 19];
 
 // ---------------------------------------------------------------- run
 running = true;
