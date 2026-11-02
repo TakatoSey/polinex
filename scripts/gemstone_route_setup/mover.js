@@ -153,7 +153,7 @@ Mover.prototype.candidates = function () {
       if (steps[i] >= dxz) continue;
       const hop = U.floor(U.v(me.x + dir.x * steps[i], feetY, me.z + dir.z * steps[i]));
       if (!this.ctx.blocks.info(hop).loaded) continue;
-      const c = this.standablesNear(hop, 4, 4, 2);
+      const c = this.standablesNear(hop, 4, 4, 8); // walking may change height freely, only digging stays level
       if (c.length) { this.hop = hop; this.cands = c; return this.cands; }
     }
     this.hop = U.floor(U.v(me.x + dir.x * Math.min(dxz, 16), feetY, me.z + dir.z * Math.min(dxz, 16)));
@@ -313,6 +313,7 @@ Mover.prototype.pathCrossesCore = function (nodes) {
 
 Mover.prototype.nextCandidate = function (reason) {
   this.reason = reason;
+  this.ctx.log("Move: " + reason + " -> trying the next spot");
   this.candIdx++;
   this.cand = null;
   this.mode = "decide";

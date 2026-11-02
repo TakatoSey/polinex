@@ -26,11 +26,26 @@ Copy the whole `gemstone_route_setup/` folder to `.minecraft/polinex/scripts/`, 
 
 The HUD shows the stage, the current action, the Route Status verdict, the progress, the lobby id and the switch count, and the current **Blocked:** reason. The world overlay draws each line: green = OK, yellow = unchecked, red = has problems.
 
+## Logs
+
+Every message goes to three places:
+
+1. The **script console** (in game).
+2. **`.minecraft/logs/latest.log`**, where every line starts with `[GRS]`.
+3. A **persistent copy of the last 400 lines** in `.minecraft/polinex/scripts/data/gemstone_route_setup.properties` (key `log`). It survives restarts.
+
+Each line has the time, level (INFO/WARN/FAIL), stage and your block position, e.g.
+`14:03:12 WARN [BUILD @512,88,431] Warp #4: line #4 -> #5 blocked by protected gemstone ...`
+
+In game: `.grs log` shows the last 15 lines (`.grs log 50` for more) and `.grs clearlog` empties it. Turn on **Debug Log** to also echo the INFO lines in chat. If something goes wrong, send me the `log` value or the `[GRS]` lines from latest.log.
+
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `.grs` / `.grs status` | Route Status summary and problems per warp |
+| `.grs log [n]` | Last n log lines (default 15) |
+| `.grs clearlog` | Empty the persistent log |
 | `.grs managers` | List route manager ids (for "Route Manager Id") |
 | `.grs fix` | Show which Dynamic Route Fix control the script found |
 | `.grs lobby` | Current lobby id from the scoreboard |
@@ -39,8 +54,9 @@ The HUD shows the stage, the current action, the Route Status verdict, the progr
 ## How the decisions work
 
 - **Walk or mine straight**: the native planner only sees loaded terrain, so early in a lobby it often picks a detour and has to come back later. With **Prefer Mining Straight** (default on), the script mines straight toward the target whenever the walking path is longer than `straight distance × Detour Threshold` (1.35) or its first blocks lead *away* from the target. It also mines when `walkCost > digCost × Dig Preference`. It never mines through gems, liquids, unknown terrain or structure cores. A planned path is followed to the end, and a slightly better one found later is ignored. Leaving a tunnel for a walk needs a walk that is at least 40% cheaper *and* not a detour.
-- **Inspection is X/Z only**: the full height is always loaded and only X/Z render in later, so inspection goals are flat. The script tunnels and hops horizontally at its current height and never climbs, Etherwarps or digs down just to check a warp.
-- **No 45° digging down**: the digger has no diagonal-down staircase, because that pattern trips failsafes. To go lower it walks, drops off a ledge onto known ground (max 4 blocks), or tunnels level until it's above the target and then digs a straight vertical shaft. Left-click is released the moment a step's blocks are cleared, and instamined blocks get single clicks, so a held attack can't keep breaking the floor ahead.
+- **Inspection is X/Z only**: the full height is always loaded and only X/Z render in later, so inspection only needs to get close in X/Z. *Walking* there may still go up or down freely, through caves and drops, if the planner finds a good path. Only *digging* stays level at the current height, and it never Etherwarps or digs up or down just to check a warp.
+- **No 45° digging down**: the digger has no diagonal-down staircase, because that pattern trips failsafes. To go lower it walks, drops off a ledge onto known ground (up to `Max Drop`), or tunnels level until it's above the target and then digs a straight vertical shaft.
+- **No movement while mining**: the miner releases WASD every tick it mines. For a vertical shaft it first sneaks onto the block centre, waits until it stands completely still, mines the block under its feet without touching a key, and then just falls (only onto known ground within `Max Drop`). Left-click is released as soon as a block is gone, and instamined blocks get single clicks, so a held attack can't keep breaking the next block.
 - **Unknown terrain**: unloaded blocks are never treated as air. For far or unloaded targets the mover hops toward loaded spots in the same direction, so it never doubles back.
 - **Etherwarp** only when the goal is at least `Etherwarp Min Rise` blocks up (legit handler `etherwarp.etherwarpTo`, with planner fallback). **Instant Transmission** is optional, and only used on long, straight, open walking segments.
 - **Goblin Queen's Den / Jungle Temple**: only a sphere of `Structure Core Radius` around their centre is avoided (from `skyblock.chStructures()`), not the whole region. A walking path through a core is swapped for a dug one when possible.
@@ -79,6 +95,7 @@ node tools/sim.js lobby    # Not doable -> no fix -> lobby switch (first retry l
 node tools/sim.js fix      # Not doable -> Dynamic Route Fix toggle -> re-inspect corrected route
 node tools/sim.js far      # X/Z render distance, a corridor that leads away first, lower target cavern:
                            # must mine straight, stay level while inspecting, never dig 45 degrees down
+node tools/sim.js shaft    # route straight below a sealed pocket: centre, dig a vertical shaft standing still, drop in
 EXPECT_FAIL=1 node tools/sim.js gem   # gemstone on a line -> stops with a manual-step message
 ```
 

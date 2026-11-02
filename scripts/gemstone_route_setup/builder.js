@@ -134,6 +134,7 @@ Builder.prototype.tick = function (st) {
     this.cur.step++;
     if (this.cur.step >= STEPS.length) {
       p.done = true;
+      ctx.log("Warp #" + w.number + " built" + (p.bombed ? " (bombed)" : ""));
       this.queue.shift();
       this.cur = null;
       ctx.progress();

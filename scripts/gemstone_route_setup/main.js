@@ -43,13 +43,35 @@ const ctx = {
   statusTick: 0,
   paused: false,
 };
-ctx.log = (msg) => { script.log("[GRS] " + msg); if (ctx.cfg.debug()) script.chat("§7[GRS] " + msg); };
-ctx.warn = (msg) => script.warn("[GRS] " + msg);
+// ---- log: script console + .minecraft/logs/latest.log + a persistent copy of the last lines in
+// polinex/scripts/data/<script folder name>.properties (key "log"), readable in game with .grs log
+const LOG_MAX = 400;
+const logLines = (script.getOr("log", "") || "").split("\n").filter((l) => l.length > 0).slice(-LOG_MAX);
+let logDirty = false, logSavedAt = 0;
+function clock() {
+  try { return new Date(U.now()).toTimeString().slice(0, 8); } catch (e) { return String(Math.floor(U.now() / 1000) % 86400); }
+}
+function logLine(level, msg) {
+  let where = "";
+  try { const p = player.blockPos(); where = " @" + p.x + "," + p.y + "," + p.z; } catch (e) { /* no player */ }
+  logLines.push(clock() + " " + level + " [" + (ctx.stage || "").replace("GRS_", "") + where + "] " + msg);
+  if (logLines.length > LOG_MAX) logLines.splice(0, logLines.length - LOG_MAX);
+  logDirty = true;
+  if (U.now() - logSavedAt > 5000) flushLog();
+}
+function flushLog() {
+  if (!logDirty) return;
+  logDirty = false;
+  logSavedAt = U.now();
+  try { script.set("log", logLines.join("\n")); } catch (e) { /* store unavailable */ }
+}
+ctx.log = (msg) => { script.log("[GRS] " + msg); logLine("INFO", msg); if (ctx.cfg.debug()) script.chat("§7[GRS] " + msg); };
+ctx.warn = (msg) => { script.warn("[GRS] " + msg); logLine("WARN", msg); };
 ctx.progress = () => { ctx.token++; };
 ctx.setIssue = (msg) => {
   if (msg === ctx.issue) return;
   ctx.issue = msg || "";
-  if (msg) script.warn("[GRS] " + msg);
+  if (msg) ctx.warn(msg);
 };
 
 // offline test harness hook (tools/sim.js); undefined inside Polinex
@@ -117,6 +139,8 @@ function releaseAll() {
 }
 
 function fail(reason) {
+  logLine("FAIL", reason);
+  flushLog();
   releaseAll();
   ctx.lobby.cancel();
   ctx.setIssue(reason);
@@ -174,6 +198,7 @@ function warpChecked(number) {
 // ------------------------------------------------------------------ lifecycle
 m.onEnable(() => {
   run = newRun();
+  logLine("INFO", "===== start (route manager " + (ctx.cfg.managerId() || "auto") + ", lobby " + (currentLobbyId() || "?") + ") =====");
   ctx.issue = "";
   ctx.paused = false;
   ctx.lastStatus = null;
@@ -183,6 +208,8 @@ m.onEnable(() => {
 });
 
 m.onDisable(() => {
+  ctx.log("Macro stopped");
+  flushLog();
   releaseAll();
   ctx.lobby.cancel();
   ctx.stage = "GRS_IDLE";
@@ -202,6 +229,7 @@ m.onDeath(() => { releaseAll(); setStage("GRS_WAIT_WORLD"); });
 
 // Failsafe/break pause: the engine stops ticking states, so make sure nothing stays held.
 on("tick", () => {
+  if (logDirty && U.now() - logSavedAt > 5000) flushLog();
   const a = macro.active();
   const paused = !!a && a.name() === NAME && a.isPaused();
   if (paused && !ctx.paused) { ctx.paused = true; releaseAll(); ctx.detail = "Paused (failsafe / break)"; }
@@ -364,6 +392,7 @@ m.onState("GRS_INSPECT", () => {
       return;
     }
     ins.target = w.number;
+    ctx.log("Inspect target #" + w.number + " " + U.fmt(w.pos) + " (" + U.distFlat(player.pos(), w.pos).toFixed(0) + " blocks X/Z, " + unchecked.length + " unchecked)");
   }
   const tw = st.warps.find((x) => x.number === ins.target);
   if (!tw) { ins.target = null; return; }
@@ -667,6 +696,15 @@ try {
         : "§cNo scriptable Dynamic Route Fix control found (use 'Fix Setting Override').");
     } else if (sub === "lobby") {
       script.chat("§7Lobby id: §f" + (currentLobbyId() || "?"));
+    } else if (sub === "log") {
+      const n = Math.max(1, Math.min(100, parseInt(args[1] || "15", 10) || 15));
+      script.chat("§7Last " + n + " of " + logLines.length + " log lines (full copy: polinex/scripts/data/<script>.properties, key 'log'; also latest.log):");
+      logLines.slice(-n).forEach((l) => script.chat((/ (WARN|FAIL) /.test(l) ? "§e" : "§f") + l));
+    } else if (sub === "clearlog") {
+      logLines.length = 0;
+      logDirty = true;
+      flushLog();
+      script.chat("§7Log cleared.");
     } else if (sub === "reset") {
       ctx.builder.reset();
       ctx.blocks.resetLobby();
@@ -678,8 +716,8 @@ try {
       st.warps.filter((w) => w.problems.length).slice(0, 12).forEach((w) => script.chat("§7#" + w.number + " " + U.fmt(w.pos) + ": §e" + w.problems.join(", ")));
     }
   }, {
-    description: "Gemstone Route Setup: status | managers | fix | lobby | reset",
-    suggest: ["status", "managers", "fix", "lobby", "reset"],
+    description: "Gemstone Route Setup: status | log [n] | clearlog | managers | fix | lobby | reset",
+    suggest: ["status", "log", "clearlog", "managers", "fix", "lobby", "reset"],
     dotOnly: true,
   });
 } catch (e) {

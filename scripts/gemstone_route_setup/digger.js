@@ -78,8 +78,10 @@ Digger.prototype.planStep = function (feet, t, flat) {
       const below = U.up(feet, -1), support = U.up(feet, -2);
       const why = this.checkCells([below]);
       const sup = B.info(support);
-      if (!why && sup.loaded && sup.solid) return { clear: [below], place: [], feet: below, up: false };
-      return { fail: why || "nothing solid to land on below " + U.fmt(below) };
+      const safeFall = sup.loaded && (sup.solid || this.landingDepth(support, this.ctx.cfg.maxDrop()) > 0);
+      // straight down: centre on the block, stand completely still while mining, then just fall
+      if (!why && safeFall) return { clear: [below], place: [], feet: below, up: false, vertical: true, badKey: "v" + U.key(feet) };
+      return { fail: why || "no known ground within " + this.ctx.cfg.maxDrop() + " blocks below " + U.fmt(below) };
     }
     if (dy > 0) {
       // need a staircase: try any horizontal direction
@@ -110,7 +112,7 @@ Digger.prototype.planStep = function (feet, t, flat) {
     if (!sup.solid) {
       if (!sup.passable) { reasons.push("odd floor at " + U.fmt(step.supportCell)); this.badSteps.add(bad); continue; }
       // a short drop onto known solid ground is fine; otherwise bridge the gap with cobble
-      if (!step.up && this.landingDepth(step.supportCell, 4) > 0) step.drop = true;
+      if (!step.up && this.landingDepth(step.supportCell, this.ctx.cfg.maxDrop()) > 0) step.drop = true;
       else step.place.push(step.supportCell);
     }
     return step;
@@ -132,12 +134,43 @@ Digger.prototype.tick = function (targetFeet, arrive, flat) {
     if (st.arrived) { this.release(); return { s: "arrived" }; }
     if (st.fail) return this.fail(st.fail);
     this.step = st;
-    this.step.phase = "clear";
+    this.step.phase = st.vertical ? "center" : "clear";
     this.step.started = U.now();
     this.step.from = feet;
     ctx.detail = "Digging toward " + U.fmt(t);
   }
   const s = this.step;
+
+  // Vertical shaft: moving while mining down breaks it (you slide off / mine the wrong block),
+  // so first centre on the block, wait until we are standing still, and never press a key while mining.
+  if (s.phase === "center") {
+    const c = U.v(s.from.x + 0.5, s.from.y, s.from.z + 0.5);
+    const off = U.distFlat(player.pos(), c);
+    if (off > 0.15) {
+      player.setSneaking(true); // slow, precise steps; also stops us from walking off an edge
+      player.setOptimalKeysTo(c.x, c.y, c.z, true);
+      if (U.now() - s.started > 4000) return this.badStep("could not centre for digging down");
+      return { s: "busy" };
+    }
+    player.resetWASD();
+    player.setSneaking(false);
+    if (player.speed() > 0.01 || !player.onGround()) return { s: "busy" }; // let the momentum die
+    s.phase = "clear";
+    return { s: "busy" };
+  }
+
+  if (s.phase === "fall") {
+    player.resetWASD();
+    const here = player.blockPos();
+    if (player.onGround() && here.y <= s.feet.y) {
+      this.dug++;
+      this.step = null;
+      ctx.progress();
+      return { s: "busy" };
+    }
+    if (U.now() - s.walkStart > 4000) return this.badStep("did not fall into the shaft at " + U.fmt(s.feet));
+    return { s: "busy" };
+  }
 
   if (s.phase === "clear") {
     player.resetWASD();
@@ -155,7 +188,7 @@ Digger.prototype.tick = function (targetFeet, arrive, flat) {
       // release left click NOW: a held attack keeps mining whatever is under the crosshair next
       // (usually the floor ahead), which turns a level tunnel into a 45 degree staircase down
       ctx.miner.release();
-      s.phase = s.place.length ? "place" : "walk";
+      s.phase = s.vertical ? "fall" : s.place.length ? "place" : "walk";
       s.walkStart = U.now();
       return { s: "busy" };
     }

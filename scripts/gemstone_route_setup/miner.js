@@ -79,6 +79,7 @@ Miner.prototype.tick = function (block, opts) {
   if (ctx.cfg.useAbility() && mining.abilityReady() && !mining.abilityActive() && !mining.activatingAbility()) {
     mining.ability();
   }
+  player.resetWASD(); // never walk while mining (a moving player mines the wrong block, worst when digging down)
   // Instamined blocks get one click per tick instead of a held button: a hold would keep breaking
   // whatever is behind the block (often the floor) before the next tick can release it.
   const instant = c.prev >= 0 && c.prev <= 1;

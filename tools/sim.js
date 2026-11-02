@@ -32,7 +32,7 @@ function fillBox(x0, y0, z0, x1, y1, z1, id) {
 }
 
 // cavern: floor at y<=59, air 60..75
-if (scenarioName !== "far") fillBox(10, 60, 10, 50, 75, 50, "minecraft:air");
+if (scenarioName !== "far" && scenarioName !== "shaft") fillBox(10, 60, 10, 50, 75, 50, "minecraft:air");
 let warps;
 let startPos = { x: 12.5, y: 60, z: 12.5 };
 const lobbyState = { location: "CRYSTAL_HOLLOWS", id: "m12AB", lobbies: 0, fixOn: false };
@@ -61,6 +61,12 @@ if (scenarioName === "basic" || scenarioName === "gem") {
   fillBox(95, 56, 10, 125, 64, 40, "minecraft:air");  // cavern B, floor at 55
   startPos = { x: 25.5, y: 60, z: 16.5 };
   warps = [{ number: 1, x: 100, y: 56, z: 16 }, { number: 2, x: 112, y: 56, z: 30 }];
+} else if (scenarioName === "shaft") {
+  // standing in a small pocket, the route is in a cavern straight below: must dig a vertical shaft
+  fillBox(20, 70, 20, 24, 72, 24, "minecraft:air");
+  fillBox(15, 56, 15, 35, 62, 35, "minecraft:air");   // lower cavern, floor 55
+  startPos = { x: 22.3, y: 70, z: 22.8 };              // deliberately off-centre
+  warps = [{ number: 1, x: 22, y: 56, z: 22 }, { number: 2, x: 30, y: 56, z: 30 }];
 } else if (scenarioName === "tunnel") {
   // start in a separate pocket: must dig to reach the cavern
   fillBox(56, 60, 20, 60, 62, 24, "minecraft:air");
@@ -106,7 +112,7 @@ let navFailed = false;
 let breaking = { key: null, ticks: 0 };
 const pendingBombs = [];
 const log = [];
-let stats = { mined: 0, placed: 0, bombs: 0, cmds: [], diagDownSteps: 0, inspectVerticalSteps: 0, inspectMinZ: 999 };
+let stats = { mined: 0, placed: 0, bombs: 0, cmds: [], diagDownSteps: 0, inspectVerticalSteps: 0, inspectMinZ: 999, shaftSteps: 0, movedWhileMiningDown: 0 };
 const seenSteps = new Set();
 
 function standableFeet(x, y, z) { return solid(x, y - 1, z) && passable(x, y, z) && passable(x, y + 1, z); }
@@ -187,6 +193,7 @@ const api = {
   Math: Math, JSON: JSON, Array: Array, Map: Map, Set: Set, Number: Number, String: String, Object: Object, RegExp: RegExp, Error: Error,
   on: (ev, fn) => { (hooks[ev] = hooks[ev] || []).push(fn); },
   script: {
+    getOr: (k, d) => d, set() {}, get: () => null,
     log: (m) => log.push("[log] " + m), info: (m) => log.push("[info] " + m), warn: (m) => { log.push("[warn] " + m); if (process.env.DBG) console.log("WARN@", JSON.stringify({ x: P.x, y: P.y, z: P.z }), m); },
     error: (m) => log.push("[error] " + m), chat: (m) => log.push("[chat] " + m),
   },
@@ -273,7 +280,7 @@ const api = {
   },
   module: { get: () => null },
   player: {
-    pos: () => ({ x: P.x, y: P.y, z: P.z }), blockPos: feetBlock, x: () => P.x, y: () => P.y, z: () => P.z,
+    pos: () => ({ x: P.x, y: P.y, z: P.z }), speed: () => P.speed || 0, blockPos: feetBlock, x: () => P.x, y: () => P.y, z: () => P.z,
     onGround: () => !(P.jumpT > 0), jump: () => { if (!(P.jumpT > 0)) P.jumpT = 8; }, setKey: (k, v) => { P.keys[k] = v; }, releaseKeys: () => { P.keys = {}; }, resetWASD: () => { P.walkTo = null; },
     setSneaking: (v) => { P.sneak = v; }, stopAllMovement: () => { P.keys = {}; walk = null; },
     heldItemSlot: () => P.held, setHeldItemSlot: (s) => { P.held = s; return true; },
@@ -315,6 +322,7 @@ function mkQuery(status, nodes) {
 
 // ---------------------------------------------------------------- physics per tick
 function physics() {
+  const before = { x: P.x, z: P.z };
   // nav walking
   if (walk) {
     const n = walk.nodes[walk.i];
@@ -334,6 +342,7 @@ function physics() {
     if (passable(nx, cy, nz) && passable(nx, cy + 1, nz)) { P.x = nx; P.z = nz; }          // walk at current height (drops fall)
     else if (ty === cy + 1 && passable(nx, ty, nz) && passable(nx, ty + 1, nz) && passable(P.x, cy + 2, P.z)) { P.x = nx; P.z = nz; P.y = ty; } // step up
   }
+  P.speed = Math.hypot(P.x - before.x, P.z - before.z);
   // jump + gravity
   if (P.jumpT > 0) {
     if (P.jumpT > 3 && passable(P.x, P.y + 2.1, P.z)) P.y += 0.3;
@@ -406,7 +415,9 @@ for (; t < MAX && running; t++) {
       const horiz = st0.feet.x !== st0.from.x || st0.feet.z !== st0.from.z;
       if (st0.feet.y < st0.from.y && horiz && !st0.drop) stats.diagDownSteps++;
       if (state === "GRS_INSPECT" && st0.feet.y !== st0.from.y) stats.inspectVerticalSteps++;
+      if (st0.vertical) stats.shaftSteps++;
     }
+    if (st0 && st0.vertical && st0.phase === "clear" && (P.walkTo || walk || P.speed > 0.001)) stats.movedWhileMiningDown++;
     if (state === "GRS_INSPECT") stats.inspectMinZ = Math.min(stats.inspectMinZ, Math.floor(P.z));
   }
   if (process.env.TRACE && t % Number(process.env.TRACE) === 0 && DEBUG.ctx) {
