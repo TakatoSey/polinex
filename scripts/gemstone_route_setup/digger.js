@@ -21,6 +21,7 @@ function Digger(ctx) {
 }
 
 Digger.prototype.release = function () {
+  this.lineStop();
   this.ctx.miner.release();
   this.ctx.placer.release();
   player.resetWASD();
@@ -92,6 +93,9 @@ Digger.prototype.driveTick = function (s) {
 Digger.prototype.reset = function (target) {
   this.release();
   if (!target) { this.axis = null; this.lastDir = null; this.sidesteps = 0; this.sideDir = null; } // forget when movement stops
+  this.stepFallback = 0;
+  this.stuckSince = 0;
+  this.lastFeetKey = null;
   this.target = target ? U.floor(target) : null;
   this.dug = 0;
   this.badSteps.clear();
@@ -250,7 +254,119 @@ Digger.prototype.planStep = function (feet, t, flat) {
 
 // Dead-man switch: walk keys / held button are released if the digger stops being ticked.
 Digger.prototype.watchdog = function () {
-  if (this.step && U.now() - (this.tickAt || 0) > 150) this.release();
+  if ((this.step || this.lineOn) && U.now() - (this.tickAt || 0) > 150) this.release();
+};
+
+function angleDiff(a, b) { return Math.abs(((a - b) % 360 + 540) % 360 - 180); }
+
+// Pitch for tunnelling: the steepest look at which the floor stays out of mining reach (so a held LMB can never
+// reach it) for the current eye height (crouching lowers it). Head blocks break in front, feet blocks ahead.
+Digger.prototype.tunnelPitch = function () {
+  const fixed = this.ctx.cfg.tunnelPitch();
+  if (fixed > 0) return fixed;
+  const eyeH = Math.max(1.1, Math.min(1.7, world.eyePos().y - player.y()));
+  const deg = Math.asin(Math.min(0.9, eyeH / (this.ctx.cfg.reach() + 0.4))) * 180 / Math.PI - 1;
+  return Math.max(10, Math.min(22, deg));
+};
+
+Digger.prototype.lineStop = function () {
+  if (this.lineOn) { player.setKey("forward", false); this.lineOn = false; }
+  this.fixCell = null;
+};
+
+// One tick of straight-line tunnelling toward t: look along the line (yaw to the target, fixed pitch), crouch,
+// hold W, hold LMB while the crosshair is on a block of our tunnel. Turning happens while walking.
+// The camera only moves off the line when the body is stuck on a block the crosshair does not reach
+// (a corner when going diagonally): look at it, break it, look back along the line.
+Digger.prototype.lineTick = function (t) {
+  const ctx = this.ctx, B = ctx.blocks, cfg = ctx.cfg;
+  const p = player.pos(), feet = player.blockPos();
+  const dx = t.x + 0.5 - p.x, dz = t.z + 0.5 - p.z;
+  const d = Math.sqrt(dx * dx + dz * dz) || 1;
+  const fx = dx / d, fz = dz / d;
+  if (!player.onGround() && !this.lineOn) return { s: "busy" };
+  if (mining.drillSlot() < 0) { mining.refreshTools(); if (mining.drillSlot() < 0) return this.fail("no drill/pickaxe in the hotbar"); }
+  if (player.heldItemSlot() !== mining.drillSlot()) { ctx.miner.press(false); mining.holdDrill(); return { s: "busy" }; }
+
+  // cells the body sweeps through in the next ~1.3 blocks (feet + head, hitbox edges included)
+  const front = [], seen = new Set();
+  const sx = -fz, sz = fx;
+  [0.45, 0.9, 1.3].forEach((a) => [-0.3, 0, 0.3].forEach((o) => {
+    const x = Math.floor(p.x + fx * a + sx * o), z = Math.floor(p.z + fz * a + sz * o);
+    if (x === feet.x && z === feet.z) return;
+    for (let h = 0; h <= 1; h++) {
+      const c = U.v(x, feet.y + h, z), k = U.key(c);
+      if (!seen.has(k)) { seen.add(k); front.push(c); }
+    }
+  }));
+  for (let i = 0; i < front.length; i++) {
+    const fi = B.info(front[i]);
+    if (!fi.loaded) return { s: "blocked", reason: "unknown terrain at " + U.fmt(front[i]) };
+    if (fi.liquid) return { s: "blocked", reason: "liquid at " + U.fmt(front[i]) };
+    if (!fi.passable) {
+      const why = B.mineBlockReason(front[i]);
+      if (why) return { s: "blocked", reason: why + " at " + U.fmt(front[i]) };
+      if (B.hasLiquidNeighbour(front[i])) return { s: "blocked", reason: "would open liquid at " + U.fmt(front[i]) };
+    }
+  }
+  // the floor ahead: a hole is fine only as a short drop onto known ground
+  const under = U.v(Math.floor(p.x + fx * 0.9), feet.y - 1, Math.floor(p.z + fz * 0.9));
+  const ui = B.info(under);
+  if (!ui.loaded || ui.liquid) return { s: "blocked", reason: "unknown / liquid floor at " + U.fmt(under) };
+  const drop = ui.passable;
+  if (drop && this.landingDepth(under, cfg.maxDrop()) === 0) return { s: "blocked", reason: "no floor at " + U.fmt(under) };
+
+  // blocks the held button may break: our tunnel (feet + head level) along the line up to mining reach,
+  // never the floor. At the flat tunnel pitch the crosshair breaks head blocks close in front and feet blocks
+  // 2-5 blocks ahead, before we get there, so the button simply stays down.
+  const allowed = new Set(seen);
+  for (let a = 1.5; a <= cfg.reach() + 1; a += 0.4) {
+    [-0.3, 0, 0.3].forEach((o) => {
+      const x = Math.floor(p.x + fx * a + sx * o), z = Math.floor(p.z + fz * a + sz * o);
+      allowed.add(x + "," + feet.y + "," + z);
+      allowed.add(x + "," + (feet.y + 1) + "," + z);
+    });
+  }
+
+  // a block in the way that the crosshair does not reach: look at it, break it, then look along the line again
+  if (this.fixCell) {
+    if (B.info(this.fixCell).passable) { this.fixCell = null; this.lookAt = 0; return { s: "busy" }; }
+    const r = ctx.miner.tick(this.fixCell, { hold: allowed });
+    if (r.s === "fail") { const c = this.fixCell; this.fixCell = null; return { s: "blocked", reason: r.reason + " at " + U.fmt(c) }; }
+    if (r.s === "done") { this.fixCell = null; this.lookAt = 0; }
+    return { s: "busy" };
+  }
+
+  // look along the line: yaw toward the target, fixed pitch; only re-aimed when we drift more than ~6 degrees
+  const wantYaw = Math.atan2(-fx, fz) * 180 / Math.PI;
+  const pitchDeg = this.tunnelPitch();
+  if ((angleDiff(wantYaw, player.yaw()) > 6 || Math.abs(player.pitch() - pitchDeg) > 6) && U.now() - (this.lookAt || 0) > 250) {
+    const e = world.eyePos(), pr = pitchDeg * Math.PI / 180;
+    rotation.miningRotateToVec(e.x + fx * Math.cos(pr) * 3, e.y - Math.sin(pr) * 3, e.z + fz * Math.cos(pr) * 3);
+    this.lookAt = U.now();
+  }
+
+  ctx.input.sneak(!drop); // crouched (cannot slide off an edge), except for a deliberate drop
+  this.sneaking = !drop;
+  const holding = ctx.miner.guard(allowed, true);
+  if (ctx.cfg.useAbility() && holding && mining.abilityReady() && !mining.abilityActive() && !mining.activatingAbility()) mining.ability();
+  player.setKey("forward", true);
+  this.lineOn = true;
+
+  // progress: every new block we stand in counts as one dug block
+  const fk = U.key(feet);
+  if (this.lastFeetKey !== fk) { this.lastFeetKey = fk; this.dug++; this.stuckSince = 0; ctx.progress(); }
+  const moving = player.speed() > 0.03;
+  const breaking = holding && !!player.mouseOverBlock(); // holding LMB at air is not progress
+  if (moving || breaking) this.stuckSince = 0;
+  else if (!this.stuckSince) this.stuckSince = U.now();
+  if (this.stuckSince && U.now() - this.stuckSince > 350) {
+    const block = front.find((c) => !B.info(c).passable);
+    if (block) { this.fixCell = block; this.stuckSince = 0; player.setKey("forward", false); return { s: "busy" }; }
+    if (U.now() - this.stuckSince > 3000) return { s: "blocked", reason: "stuck at " + U.fmt(feet) };
+  }
+  ctx.detail = "Tunnelling toward " + U.fmt(t);
+  return { s: "busy" };
 };
 
 Digger.prototype.tick = function (targetFeet, arrive, flat) {
@@ -262,6 +378,19 @@ Digger.prototype.tick = function (targetFeet, arrive, flat) {
   const feet = player.blockPos();
   if (U.distFlat(feet, t) < 1 && (flat || Math.abs(feet.y - t.y) < 1)) { this.release(); return { s: "arrived" }; }
   if (this.dug > ctx.cfg.maxDigLen()) return this.fail("dug " + this.dug + " blocks without arriving (Max Dig Length)");
+
+  // Straight-line tunnelling (the normal case): toward the target at any angle, W + LMB held, one look.
+  // The step planner below is only used for shafts down, real climbs, and going around something unminable.
+  const dyT = flat ? 0 : t.y - feet.y;
+  const hd = U.distFlat(player.pos(), U.v(t.x + 0.5, 0, t.z + 0.5));
+  if (!this.step && hd >= 0.7 && dyT <= 1 && !(this.stepFallback > 0)) {
+    const lr = this.lineTick(t);
+    if (lr.s !== "blocked") return lr;
+    this.lineStop();
+    this.stepFallback = 3; // a few planned steps (they sidestep around it), then back to the straight line
+    ctx.log("Tunnel: " + lr.reason + " -> going around it");
+  }
+  if (this.step === null) this.lineStop();
 
   if (!this.step) {
     // only plan from the ground: mid-jump (jump boost / god potion) the feet position is in the air and every
@@ -306,6 +435,7 @@ Digger.prototype.tick = function (targetFeet, arrive, flat) {
     if (player.onGround() && here.y <= s.feet.y) {
       this.dug++;
       this.step = null;
+      if (this.stepFallback > 0) this.stepFallback--;
       ctx.progress();
       return { s: "busy" };
     }
@@ -374,6 +504,7 @@ Digger.prototype.tick = function (targetFeet, arrive, flat) {
       player.resetWASD();
       this.dug++;
       this.step = null;
+      if (this.stepFallback > 0) this.stepFallback--;
       ctx.progress();
       return { s: "busy" };
     }

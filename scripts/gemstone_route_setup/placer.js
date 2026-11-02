@@ -109,6 +109,13 @@ Placer.prototype.canPillar = function (cell) {
   return below.loaded && below.solid && !below.liquid && c.passable && h1.passable && h2.passable;
 };
 
+// Standing on the column even when the feet block counts as the neighbour (landed on the edge after a jump,
+// e.g. with jump boost): the hitbox (0.6 wide) still overlaps the column at the right height.
+Placer.prototype.onColumn = function (c0) {
+  const p = player.pos();
+  return Math.floor(p.y + 0.01) === c0.y && Math.abs(p.x - (c0.x + 0.5)) < 0.8 && Math.abs(p.z - (c0.z + 0.5)) < 0.8;
+};
+
 Placer.prototype.pillarTick = function (cell) {
   const ctx = this.ctx;
   const c0 = U.floor(cell);
@@ -128,7 +135,7 @@ Placer.prototype.pillarTick = function (cell) {
   if (!info.passable) return this.fail("cell " + U.fmt(c0) + " is occupied by " + info.id);
   const feet = player.blockPos();
   const airborne = !player.onGround();
-  if (!airborne && !U.same(feet, c0)) return this.fail("not standing in " + U.fmt(c0) + " for pillar placement", true);
+  if (!airborne && !U.same(feet, c0) && !this.onColumn(c0)) return this.fail("not standing in " + U.fmt(c0) + " for pillar placement", true);
 
   if (c.phase === "prep") {
     const r = ctx.items.ensureHotbar(ctx.cfg.placeItem());
@@ -159,6 +166,8 @@ Placer.prototype.pillarTick = function (cell) {
     c.at = U.now();
     c.lastY = player.y();
     c.rising = false;
+    c.falling = false;
+    c.reaimed = false;
     return { s: "busy" };
   }
   if (c.phase === "rise") {
@@ -170,8 +179,18 @@ Placer.prototype.pillarTick = function (cell) {
     const y = player.y();
     if (y > c.lastY + 0.001) c.rising = true;
     const atApex = c.rising && y <= c.lastY + 0.001;
+    if (c.rising && y < c.lastY - 0.001) c.falling = true;
     c.lastY = y;
-    if (!player.onGround() && atApex && y >= c0.y + 1.15 && onBase) {
+    // high jumps (jump boost): the fixed look drifts off the block on the way up; one tiny re-aim straight down
+    if (!onBase && !c.reaimed && c.rising && y >= c0.y + 1.15) {
+      const pa = U.steadyAim(U.v(c0.x + 0.5, c0.y - 0.02, c0.z + 0.5), 0.05);
+      rotation.generalRotateToVec(pa.x, pa.y, pa.z);
+      c.reaimed = true;
+    }
+    // at the top of the jump or on the way down, as long as the feet are still clearly above the cell
+    // normal jump: at the apex / on the way down. High jump (jump boost): the block below can be out of reach at
+    // the apex, so place on the way up once the feet are 1.5 above it (still plenty of margin for ping)
+    if (!player.onGround() && (atApex || c.falling || y >= c0.y + 1.5) && y >= c0.y + 1.15 && onBase) {
       player.rightClick();
       c.phase = "verify";
       c.at = U.now();

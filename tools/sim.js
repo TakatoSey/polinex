@@ -209,7 +209,7 @@ function lookAt(x, y, z) {
 function mouseOver() {
   if (!P.look) return null;
   const e = eye();
-  const far = { x: e.x + P.look.x * 5, y: e.y + P.look.y * 5, z: e.z + P.look.z * 5 };
+  const far = { x: e.x + P.look.x * 4.5, y: e.y + P.look.y * 4.5, z: e.z + P.look.z * 4.5 }; // survival block reach
   const h = raytraceFrom(e, far);
   return h.type === "BLOCK" ? h : null;
 }
@@ -422,6 +422,11 @@ function physics() {
     const dx = t.x - P.x, dz = t.z - P.z, d = Math.hypot(dx, dz);
     if (d > 0.001) { const acc = P.sneak ? 0.04 : 0.1; P.vx += dx / d * acc; P.vz += dz / d * acc; }
   }
+  else if (P.keys.forward && P.look) {
+    // W held: walk where the camera looks (horizontal part)
+    const hl = Math.hypot(P.look.x, P.look.z) || 1, acc = P.sneak ? 0.04 : 0.1;
+    P.vx += P.look.x / hl * acc; P.vz += P.look.z / hl * acc;
+  }
   if (P.walkTo) {
     if (P.pvx && P.vx && Math.sign(P.pvx) !== Math.sign(P.vx) && Math.abs(P.vx) > 0.01) stats.velFlips = (stats.velFlips || 0) + 1;
     if (P.pvz && P.vz && Math.sign(P.pvz) !== Math.sign(P.vz) && Math.abs(P.vz) > 0.01) stats.velFlips = (stats.velFlips || 0) + 1;
@@ -433,7 +438,18 @@ function physics() {
   if (P.vx || P.vz) {
     const nx = P.x + P.vx, nz = P.z + P.vz, cy = Math.floor(P.y);
     const ty = P.walkTo ? Math.floor(P.walkTo.y) : cy;
-    if (passable(nx, cy, nz) && passable(nx, cy + 1, nz)) { P.x = nx; P.z = nz; }
+    // hitbox: only the leading edge in the direction we move is checked (like Minecraft's collision)
+    const free = (x, z) => {
+      const ex = x !== P.x ? [Math.sign(x - P.x) * 0.3] : [], ez = z !== P.z ? [Math.sign(z - P.z) * 0.3] : [];
+      const pts = [];
+      ex.forEach((ox) => [-0.3, 0.3].forEach((oz) => pts.push([ox, oz])));
+      ez.forEach((oz) => [-0.3, 0.3].forEach((ox) => pts.push([ox, oz])));
+      return pts.every(([ox, oz]) => passable(x + ox, cy, z + oz) && passable(x + ox, cy + 1, z + oz));
+    };
+    if (P.walkTo ? (passable(nx, cy, nz) && passable(nx, cy + 1, nz)) : free(nx, nz)) { P.x = nx; P.z = nz; }
+    else if (!P.walkTo && free(nx, P.z)) { P.x = nx; P.vz = 0; }   // hitbox: slide along walls / stop at corners
+    else if (!P.walkTo && free(P.x, nz)) { P.z = nz; P.vx = 0; }
+    else if (!P.walkTo) { P.vx = 0; P.vz = 0; }
     else if (ty === cy + 1 && passable(nx, ty, nz) && passable(nx, ty + 1, nz) && passable(P.x, cy + 2, P.z)) { P.x = nx; P.z = nz; P.y = ty; }
     else { P.vx = 0; P.vz = 0; }
   }

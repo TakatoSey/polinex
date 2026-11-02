@@ -115,6 +115,8 @@ const LABEL = {
 
 function setStage(name, detail) {
   if (ctx.stage !== name) ctx.log("Stage " + (LABEL[ctx.stage] || ctx.stage) + " -> " + (LABEL[name] || name));
+  // the "never got back" timer always starts when waiting begins (a stale one failed instantly before)
+  if (name === "GRS_WAIT_WORLD" && ctx.stage !== "GRS_WAIT_WORLD" && run) run.worldSince = U.now();
   ctx.stage = name;
   ctx.stageAt = U.now();
   ctx.detail = detail || "";
@@ -226,6 +228,8 @@ function resumeStage() {
   ctx.paused = false;
   if (!run) return;
   const back = ctx.stage === "GRS_IDLE" ? "GRS_INIT" : ctx.stage;
+  // Polinex pauses the macro on a world change: during a lobby switch that is expected, just carry on with it
+  if (back === "GRS_LOBBY" && ctx.lobby.job) { setStage("GRS_LOBBY"); return; }
   setStage(back === "GRS_LOBBY" ? "GRS_WAIT_WORLD" : back);
 }
 m.onResume(resumeStage);
@@ -303,6 +307,8 @@ on("worldLoad", () => {
 
 on("serverDisconnect", (reason) => {
   if (!run) return;
+  // a Hypixel server transfer (hub <-> Crystal Hollows) can report a disconnect: expected while switching lobby
+  if (ctx.stage === "GRS_LOBBY" && ctx.lobby.job) { ctx.log("Server transfer during the lobby switch (" + reason + "), continuing"); return; }
   releaseAll();
   ctx.lobby.cancel();
   ctx.setIssue("Disconnected: " + reason);

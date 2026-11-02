@@ -561,7 +561,8 @@ Builder.prototype.action = function (kind, cell, aim, opts) {
     return { s: "done" };
   }
   if (kind === "place" && a.pillar) {
-    if (player.onGround() && !U.same(player.blockPos(), c)) {
+    // on the column (even on its edge): the placer centres us crouched, never send the mover (it walked us off)
+    if (player.onGround() && !U.same(player.blockPos(), c) && !ctx.placer.onColumn(c)) {
       if (++a.pmoves > 3) { a.pillar = false; return { s: "busy" }; }
       ctx.mover.stop();
       ctx.mover.goTo({

@@ -40,10 +40,12 @@ Miner.prototype.release = function () {
 // Keep / drop the held button depending on what is under the crosshair (used while walking a tunnel).
 // It also looks ~3 ticks ahead: while we move the crosshair slides forward, so the button is released
 // as soon as the look ray from where the eye WILL be would hit something that is not allowed (the floor).
-Miner.prototype.guard = function (allowed) {
+// airOk: pointing at nothing (all mined ahead) keeps the button held too, like a player holding LMB.
+Miner.prototype.guard = function (allowed, airOk) {
   const B = this.ctx.blocks;
   const okBlock = (p) => !!p && !!allowed && allowed.has(U.key(U.floor(p))) && !B.mineBlockReason(U.floor(p));
-  let ok = okBlock(player.mouseOverBlock());
+  const over = player.mouseOverBlock();
+  let ok = okBlock(over) || (!!airOk && !over);
   if (ok) {
     try {
       const yaw = player.yaw() * Math.PI / 180, pitch = player.pitch() * Math.PI / 180;
@@ -51,7 +53,7 @@ Miner.prototype.guard = function (allowed) {
       const e = world.eyePos();
       const ahead = U.v(e.x + player.motionX() * 3, e.y, e.z + player.motionZ() * 3);
       const hit = world.raytraceFrom(ahead, U.add(ahead, U.scale(dir, this.ctx.cfg.reach())));
-      if (hit.block && !okBlock(hit.block)) ok = false;
+      if (hit.block && !okBlock(hit.block)) ok = false; // something not allowed is about to come under the crosshair
 
     } catch (e) { /* no prediction available: current check only */ }
   }
