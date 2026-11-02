@@ -64,13 +64,14 @@ Input.prototype.face = function (target) {
   return false;
 };
 
-Input.prototype.nudge = function (target, tol) {
+// opts.sneak === false: do not crouch (needed to step over an edge into a hole)
+Input.prototype.nudge = function (target, tol, opts) {
   const p = player.pos();
   const d = U.distFlat(p, target);
   if (d <= tol) { player.resetWASD(); this.nudgeT = 0; return true; }
   // more than a step away: face it and walk forward instead of walking backwards / sideways
   if (d > 1.0 && !this.face(target)) { player.resetWASD(); return false; }
-  this.sneak(true);
+  if (!(opts && opts.sneak === false)) this.sneak(true);
   const dirX = target.x - p.x, dirZ = target.z - p.z;
   const vx = player.motionX ? player.motionX() : 0, vz = player.motionZ ? player.motionZ() : 0;
   const movingAway = vx * dirX + vz * dirZ < -0.0005; // overshot: let it settle, do not reverse immediately

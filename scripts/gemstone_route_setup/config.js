@@ -30,6 +30,8 @@ const SETTINGS = [
     description: "Start the native Gemstone Macro once Route Status reports Set up." },
 
   // ---- Movement ----
+  { id: "etherToWaypoints", type: "boolean", name: "Etherwarp Onto Own Waypoints", default: true,
+    description: "Etherwarp onto the waypoint cobble it placed (to start a line / remove support blocks), like the Gemstone Macro does on the route." },
   { id: "etherMinRise", type: "slider", name: "Etherwarp Min Rise", min: 3, max: 60, default: 15,
     description: "Etherwarp is only used for one-off long trips: a climb of at least this many blocks..." },
   { id: "etherMinDist", type: "slider", name: "Etherwarp Min Distance", min: 20, max: 200, default: 70,
@@ -114,6 +116,7 @@ function makeCfg(m) {
     fixSetting: () => str("fixSetting"),
     manualFixWaitMs: () => num("manualFixWaitSec") * 1000,
     startGemMacro: () => s("startGemMacro") === true,
+    etherToWaypoints: () => s("etherToWaypoints") === true,
     etherMinRise: () => num("etherMinRise"),
     etherMinDist: () => num("etherMinDist"),
     etherCooldownSec: () => num("etherCooldownSec"),

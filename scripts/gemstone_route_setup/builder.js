@@ -14,7 +14,9 @@ const S = require("./status.js");
 
 // Two phases: first every waypoint is built, then every line is cleared, so each line has a cobble at BOTH
 // ends to stand on (obstructions near the far end are mined from that end).
-const PHASES = { spot: ["spot", "bomb", "respot", "cleanup"], line: ["line"] };
+// Route order, one waypoint after the other like walking the route (24 -> 25 -> 26): build it, then clear the
+// line from it to the next waypoint right away (lines are the main point, they must not wait for a second pass).
+const PHASES = { all: ["spot", "bomb", "respot", "cleanup", "line"] };
 
 function Builder(ctx) {
   this.ctx = ctx;
@@ -69,7 +71,7 @@ Builder.prototype.start = function (st, numbers) {
     const w = warps.find((x) => x.number === n);
     if (w) { const p = this.progFor(w); p.done = false; p.fails = 0; p.blocked = null; }
   });
-  this.queue = order.map((n) => ({ number: n, phase: "spot" })).concat(order.map((n) => ({ number: n, phase: "line" })));
+  this.queue = order.map((n) => ({ number: n, phase: "all" }));
   this.cur = null;
 };
 
@@ -132,7 +134,7 @@ Builder.prototype.tick = function (st) {
   const steps = PHASES[this.cur.phase];
   const stepName = steps[this.cur.step];
   const left = this.queue.filter((q) => q.phase === this.cur.phase).length;
-  ctx.progressText = (this.cur.phase === "spot" ? "Building warp #" + w.number : "Line #" + w.number + (next ? " -> #" + next.number : "")) +
+  ctx.progressText = (stepName !== "line" ? "Building warp #" + w.number : "Line #" + w.number + (next ? " -> #" + next.number : "")) +
     " (" + (st.warps.length - left + 1) + "/" + st.warps.length + ") - " + stepName;
 
   let r;
@@ -147,8 +149,8 @@ Builder.prototype.tick = function (st) {
     this.release();
     this.cur.step++;
     if (this.cur.step >= steps.length) {
-      if (this.cur.phase === "line") { p.done = true; ctx.log("Line #" + w.number + (next ? " -> #" + next.number : "") + " clear"); }
-      else ctx.log("Warp #" + w.number + " built" + (p.bombed ? " (bombed)" : ""));
+      p.done = true;
+      ctx.log("Warp #" + w.number + " built" + (p.bombed ? " (bombed)" : "") + ", line to #" + (next ? next.number : "-") + " clear");
       this.queue.shift();
       this.cur = null;
       ctx.progress();
@@ -243,11 +245,50 @@ Builder.prototype.ensureSpot = function (w, landing) {
   return { s: "busy" }; // chain complete, the waypoint itself is placed next tick
 };
 
+// Get on top of one of OUR waypoint cobbles: an Etherwarp onto it (exactly what the Gemstone Macro does on the
+// route, one warp, never a chain), or walk if there is no Etherwarp item / it cannot be reached.
+// Returns { s: "busy" } | { s: "done" } | { s: "fail", reason }.
+Builder.prototype.standOn = function (cob, label) {
+  const ctx = this.ctx;
+  const feet = player.blockPos();
+  if (U.same(feet, U.up(cob, 1)) || (ctx.placer.onColumn(U.up(cob, 1)) && player.onGround())) { this.so = null; return { s: "done" }; }
+  const k = U.key(cob);
+  if (!this.so || this.so.key !== k) this.so = { key: k, mode: null, at: U.now() };
+  const so = this.so;
+  if (!so.mode) {
+    let can = false;
+    try { can = ctx.cfg.etherToWaypoints() && skyblock.hasEtherwarp() && etherwarp.canReach(cob.x, cob.y, cob.z); } catch (e) { can = false; }
+    so.mode = can ? "ether" : "walk";
+    ctx.log((can ? "Etherwarp onto " : "Walking onto ") + label + " " + U.fmt(cob));
+  }
+  if (so.mode === "ether") {
+    ctx.detail = "Etherwarp onto " + label;
+    let done = false;
+    try { done = etherwarp.directTo(cob.x, cob.y, cob.z); } catch (e) { done = false; }
+    if (done) { etherwarp.stop(); ctx.lastEtherAt = U.now(); this.so = null; return { s: "done" }; }
+    if (etherwarp.failed() || U.now() - so.at > 6000) { etherwarp.stop(); so.mode = "walk"; so.at = U.now(); }
+    return { s: "busy" };
+  }
+  ctx.detail = "Walking onto " + label;
+  ctx.mover.goTo({ id: "standOn:" + k, pos: cob, supports: [cob], near: 1, allowEther: false, allowDig: false, label: label,
+    arrive: () => U.same(player.blockPos(), U.up(cob, 1)) });
+  const r = ctx.mover.tick();
+  if (r.s === "arrived") { ctx.mover.stop(); this.so = null; return { s: "done" }; }
+  if (r.s === "fail") { ctx.mover.stop(); this.so = null; return { s: "fail", reason: r.reason }; }
+  return { s: "busy" };
+};
+
 // Break the support chain again: only blocks directly under a waypoint stay (they cannot hurt the route).
+// Done from ON TOP of the waypoint cobble (Etherwarp onto it): the support blocks are then beside/below us.
 Builder.prototype.cleanupSupport = function (w, p, st) {
   const ctx = this.ctx;
   const B = ctx.blocks;
   if (!p.chain || !p.chain.length) return { s: "done" };
+  if (!p.cleanupOnCob) {
+    const r = this.standOn(this.cobPos(w), "waypoint #" + w.number);
+    if (r.s === "busy") return r;
+    p.cleanupOnCob = true; // done or failed: remove what we can from where we are
+  }
   const keep = (cell) => st.warps.some((x) => {
     const c = this.cobPos(x);
     return c.x === cell.x && c.z === cell.z && cell.y <= c.y;
@@ -359,6 +400,30 @@ Builder.prototype.lineObstruction = function (from, to, wide) {
   return best;
 };
 
+// Solid blocks in a thin tube around the line (radius ~0.3): what a thicker line check (like Polinex's) may count
+// as blocking even when the exact centre ray passes. Nearest to `from` first.
+Builder.prototype.lineTube = function (from, to) {
+  const B = this.ctx.blocks;
+  const a = U.eyesOn(from)[0], b = U.v(to.x + 0.5, to.y + 0.98, to.z + 0.5);
+  const d = U.sub(b, a), len = Math.sqrt(d.x * d.x + d.y * d.y + d.z * d.z) || 1;
+  const f = U.scale(d, 1 / len);
+  const s1 = U.v(-f.z, 0, f.x), hl = Math.sqrt(s1.x * s1.x + s1.z * s1.z) || 1;
+  const side = U.scale(s1, 1 / hl);
+  const upv = U.v(-f.x * f.y, f.x * f.x + f.z * f.z, -f.z * f.y); // perpendicular to f, mostly up
+  const out = [], seen = new Set();
+  for (let t = 0.3; t < len - 0.3; t += 0.25) {
+    const c = U.add(a, U.scale(f, t));
+    [[0.3, 0], [-0.3, 0], [0, 0.3], [0, -0.3]].forEach((o) => {
+      const q = U.floor(U.add(c, U.add(U.scale(side, o[0]), U.scale(upv, o[1]))));
+      const k = U.key(q);
+      if (seen.has(k) || U.same(q, from) || U.same(q, to) || U.same(q, U.up(from, 1)) || U.same(q, U.up(from, 2))) return;
+      seen.add(k);
+      if (!B.info(q).passable) out.push(q);
+    });
+  }
+  return out;
+};
+
 // Solid blocks along the Etherwarp line from `from` to `to`, nearest to `from` first.
 Builder.prototype.lineCells = function (from, to) {
   const B = this.ctx.blocks;
@@ -402,6 +467,13 @@ Builder.prototype.clearLine = function (w, next) {
     const ray = this.lineObstruction(from, to, false) || (statusSays && U.now() - this.lastChangeAt >= 3000 ? this.lineObstruction(from, to, true) : null);
     if (ray) obs = [ray.block];
   }
+  // Route Status still says blocked but the centre line is free: check a thicker tube around the line
+  if (!obs.length && statusSays && U.now() - this.lastChangeAt >= 3000) obs = this.lineTube(from, to);
+  if (obs.length && !ls.logged) {
+    ls.logged = true;
+    ctx.log(label + ": " + obs.length + " blocking block(s), first " + U.fmt(obs[0]) + " (" +
+      U.dist(U.center(from), U.center(obs[0])).toFixed(1) + " from #" + w.number + "), Route Status: " + (w.problems.join(", ") || "-"));
+  }
   if (!obs.length) {
     if (!statusSays) { this.lineWaitStart = 0; this.ls = null; return { s: "done" }; }
     if (U.now() - this.lastChangeAt < 3000) return { s: "busy" }; // let Route Status catch up
@@ -427,21 +499,37 @@ Builder.prototype.clearLine = function (w, next) {
       "). Manual step: mine that block (or the blocks around it), then start again." };
   }
 
-  // 1) start the line standing on warp A (skip if we cannot get onto it: work from where we are)
+  // 1) stand on warp A: Etherwarp onto its cobble (or walk); if that is impossible, work from where we are
   if (ls.phase === "toA") {
-    const onA = U.same(player.blockPos(), U.up(from, 1));
-    if (onA || !B.isCobble(B.info(from).id) || ls.tries > 0) { ls.phase = "sweep"; ctx.mover.stop(); return { s: "busy" }; }
-    ctx.detail = "Walking to warp #" + w.number + " to start " + label;
-    // walk only: if we cannot simply walk onto the cobble we clear from where we are (no digging up to it)
-    ctx.mover.goTo({ id: "lineA:" + lkey, pos: from, supports: [from], near: 1, allowEther: false, allowDig: false, label: "warp #" + w.number,
-      arrive: () => U.same(player.blockPos(), U.up(from, 1)) });
-    const r = ctx.mover.tick();
-    if (r.s === "fail") { ls.tries++; ctx.log("Cannot stand on warp #" + w.number + " (" + r.reason + "); clearing from here"); ctx.mover.stop(); }
-    if (r.s === "arrived") { ctx.mover.stop(); ls.phase = "sweep"; }
+    if (!B.isCobble(B.info(from).id)) { ls.phase = "advance"; return { s: "busy" }; }
+    const r = this.standOn(from, "warp #" + w.number);
+    if (r.s === "busy") return r;
+    if (r.s === "fail") ctx.log("Cannot get onto warp #" + w.number + " (" + r.reason + "); clearing " + label + " from here");
+    ls.phase = r.s === "done" ? "sweep" : "advance";
+    ls.sweepAt = U.now();
     return { s: "busy" };
   }
 
-  // 2) mine the next obstruction along the line; out of reach -> tunnel toward it (action relocation digs there)
+  // 2) on warp A: look exactly along the line toward B and hold LMB. The crosshair runs along the line and breaks
+  //    every blocking block in reach one after the other, without moving the camera.
+  if (ls.phase === "sweep") {
+    const eye = world.eyePos();
+    const topB0 = U.v(to.x + 0.5, to.y + 0.98, to.z + 0.5);
+    if (U.dist(eye, U.center(target)) > ctx.cfg.reach() || U.now() - ls.sweepAt > 15000) { ctx.miner.press(false); ls.phase = "advance"; return { s: "busy" }; }
+    if (mining.drillSlot() < 0) mining.refreshTools();
+    if (player.heldItemSlot() !== mining.drillSlot()) { ctx.miner.press(false); mining.holdDrill(); return { s: "busy" }; }
+    if (!ls.looked) { rotation.miningRotateToVec(topB0.x, topB0.y, topB0.z); ls.looked = U.now(); return { s: "busy" }; }
+    if (!rotation.miningIsDone() && rotation.miningIsRotating() && U.now() - ls.looked < 1500) return { s: "busy" };
+    player.resetWASD();
+    const allowed = new Set(obs.map(U.key));
+    const holding = ctx.miner.guard(allowed);
+    ctx.detail = "Clearing " + label + " along the line (" + obs.length + " left)";
+    if (ls.left !== obs.length) { ls.left = obs.length; ls.progressAt = U.now(); }
+    if (!holding && U.now() - (ls.progressAt || ls.sweepAt) > 2500) { ctx.miner.press(false); ls.phase = "advance"; }
+    return { s: "busy" };
+  }
+
+  // 3) the rest, one block at a time: out of reach -> tunnel toward it (action relocation digs there)
   const eyeA = U.eyesOn(from)[0], topB = U.v(to.x + 0.5, to.y + 0.98, to.z + 0.5);
   ctx.detail = "Clearing " + label + " at " + U.fmt(target) + " (" + obs.length + " left)";
   const hold = new Set(obs.slice(0, 6).map(U.key)); // the held button may run on into the next line blocks

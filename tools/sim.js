@@ -272,7 +272,7 @@ const api = {
   skyblock: {
     location: () => lobbyState.location,
     area: () => "Jungle", /* detection must work from the Nucleus box alone */ scoreboard: () => ["11/02/26 " + lobbyState.id, "Crystal Hollows"], chStructures: () => [],
-    hasMiningTool: () => true, hasEtherwarp: () => false,
+    hasMiningTool: () => true, hasEtherwarp: () => !process.env.NOETHER,
   },
   scan: {
     create: () => {
@@ -312,7 +312,20 @@ const api = {
     pathFindRotateToVec: (x, y, z) => lookAt(x, y, z), pathFindIsDone: () => true, pathFindStopRotation() {},
     etherwarpStopRotation() {}, distanceTo: () => 10,
   },
-  etherwarp: { canReach: () => false, stop() {}, failed: () => false, directTo: () => { stats.etherwarps++; return false; },
+  etherwarp: {
+    canReach: (x, y, z) => {
+      if (!solid(x, y, z) || !passable(x, y + 1, z) || !passable(x, y + 2, z)) return false;
+      const e = eye(), t = { x: x + 0.5, y: y + 0.98, z: z + 0.5 };
+      if (Math.hypot(t.x - e.x, t.y - e.y, t.z - e.z) > 57) return false;
+      const h = raytraceFrom(e, t);
+      return h.type === "BLOCK" && h.block.x === x && h.block.y === y && h.block.z === z;
+    },
+    stop() {}, failed: () => false,
+    directTo: (x, y, z) => {
+      if (!api.etherwarp.canReach(x, y, z)) return false;
+      P.x = x + 0.5; P.y = y + 1; P.z = z + 0.5; P.vx = 0; P.vz = 0; walk = null; stats.etherwarps++;
+      return true;
+    },
     etherwarpTo: () => { stats.etherwarps++; return false; }, pathfindTo: () => { stats.etherwarps++; return false; } },
   nav: {
     findPathAsync: (from, target) => {
@@ -446,7 +459,10 @@ function physics() {
       ez.forEach((oz) => [-0.3, 0.3].forEach((ox) => pts.push([ox, oz])));
       return pts.every(([ox, oz]) => passable(x + ox, cy, z + oz) && passable(x + ox, cy + 1, z + oz));
     };
-    if (P.walkTo ? (passable(nx, cy, nz) && passable(nx, cy + 1, nz)) : free(nx, nz)) { P.x = nx; P.z = nz; }
+    const supported = (x, z) => [-0.3, 0.3].some((ox) => [-0.3, 0.3].some((oz) => solid(x + ox, cy - 1, z + oz)));
+    const edgeStop = P.sneak && !(P.jumpT > 0) && supported(P.x, P.z) && !supported(nx, nz);
+    if (edgeStop) { P.vx = 0; P.vz = 0; stats.edgeStops = (stats.edgeStops || 0) + 1; }
+    else if (P.walkTo ? (passable(nx, cy, nz) && passable(nx, cy + 1, nz)) : free(nx, nz)) { P.x = nx; P.z = nz; }
     else if (!P.walkTo && free(nx, P.z)) { P.x = nx; P.vz = 0; }   // hitbox: slide along walls / stop at corners
     else if (!P.walkTo && free(P.x, nz)) { P.z = nz; P.vx = 0; }
     else if (!P.walkTo) { P.vx = 0; P.vz = 0; }

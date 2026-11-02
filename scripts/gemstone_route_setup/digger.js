@@ -418,21 +418,28 @@ Digger.prototype.tick = function (targetFeet, arrive, flat) {
   // Vertical shaft: moving while mining down breaks it (you slide off / mine the wrong block),
   // so first centre on the block, wait until we are standing still, and never press a key while mining.
   if (s.phase === "center") {
-    const c = U.v(s.from.x + 0.5, s.from.y, s.from.z + 0.5);
-    this.sneaking = true; // nudge crouches: slow, precise steps, no edge slips
-    if (!this.ctx.input.nudge(c, 0.2)) {
-      if (U.now() - s.started > 5000) return this.badStep("could not centre for digging down");
-      return { s: "busy" };
-    }
-    if (player.speed() > 0.01 || !player.onGround()) return { s: "busy" }; // let the momentum die
+    // Inside a 1x1 shaft we already fit: no centring at all (the old tight centring did D A D A forever).
+    const B = this.ctx.blocks, f = s.from;
+    const boxed = [[1, 0], [-1, 0], [0, 1], [0, -1]].every((d) => !B.info(U.v(f.x + d[0], f.y, f.z + d[1])).passable);
+    const c = U.v(f.x + 0.5, f.y, f.z + 0.5);
+    if (!boxed && U.now() - s.started < 2500 && !this.ctx.input.nudge(c, 0.25)) return { s: "busy" }; // loose, then just dig
+    player.resetWASD();
+    if ((player.speed() > 0.01 || !player.onGround()) && U.now() - s.started < 3500) return { s: "busy" }; // let the momentum die
     s.phase = "clear";
     return { s: "busy" };
   }
 
   if (s.phase === "fall") {
-    player.resetWASD();
     const here = player.blockPos();
+    // Still standing on the edge of the new hole (not centred enough to drop): step in WITHOUT crouching, crouching
+    // is exactly what stops you from walking over an edge
+    if (player.onGround() && here.y > s.feet.y && U.now() - s.walkStart > 300) {
+      ctx.input.sneak(false);
+      this.sneaking = false;
+      ctx.input.nudge(U.v(s.feet.x + 0.5, s.feet.y, s.feet.z + 0.5), 0.05, { sneak: false });
+    } else player.resetWASD();
     if (player.onGround() && here.y <= s.feet.y) {
+      player.resetWASD();
       this.dug++;
       this.step = null;
       if (this.stepFallback > 0) this.stepFallback--;
