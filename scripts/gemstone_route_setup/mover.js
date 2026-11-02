@@ -138,6 +138,7 @@ Mover.prototype.candidates = function () {
   if (this.cands) return this.cands;
   this.hop = null;
   if (g.supports && g.supports.length) { this.cands = g.supports.slice(); return this.cands; }
+  if (g.tunnelOnly) { this.cands = []; return this.cands; } // dig straight toward the goal, no stand-spot search
   const near = g.near === undefined ? 3 : g.near;
   const target = U.floor(g.pos);
   const me = player.pos();

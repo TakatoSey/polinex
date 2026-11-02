@@ -135,7 +135,8 @@ Placer.prototype.pillarTick = function (cell) {
     if (r.s === "busy") return r;
     if (r.s === "fail") return this.fail(r.reason);
     if (!player.setHeldItemSlot(r.slot)) return { s: "busy" };
-    rotation.generalRotateToVec(c0.x + 0.5, c0.y - 0.02, c0.z + 0.5); // top face of the block we stand on
+    const pa = U.steadyAim(U.v(c0.x + 0.5, c0.y - 0.02, c0.z + 0.5)); // top face of the block we stand on, slightly ahead
+    rotation.generalRotateToVec(pa.x, pa.y, pa.z);
     c.phase = "aim";
     c.at = U.now();
     return { s: "busy" };

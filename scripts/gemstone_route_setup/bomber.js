@@ -40,7 +40,8 @@ Bomber.prototype.tick = function (target) {
     if (hit.type !== "MISS" && U.dist(U.v(hit.x, hit.y, hit.z), t) > 1.5) return this.fail("no line of sight to the bomb target", true);
     if (!player.setHeldItemSlot(r.slot)) return { s: "busy" };
     c.before = ctx.items.count(name);
-    rotation.generalRotateToVec(t.x, t.y, t.z);
+    const ta = U.steadyAim(t);
+    rotation.generalRotateToVec(ta.x, ta.y, ta.z);
     c.aimStart = U.now();
     c.phase = "aim";
     return { s: "busy" };

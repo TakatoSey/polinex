@@ -24,12 +24,73 @@ Digger.prototype.release = function () {
   this.ctx.miner.release();
   this.ctx.placer.release();
   player.resetWASD();
+  if (this.sneaking) { player.setSneaking(false); this.sneaking = false; }
+  this.lookKey = null;
   this.step = null;
+};
+
+// Tunnel like a player does it: look ONE way (tunnel yaw, fixed pitch) once, crouch, hold left click and only
+// press W when the space ahead is open (never walk into the wall). No camera movement per block.
+// For a shaft: look down-forward once, stand still, hold, fall.
+Digger.prototype.driveTick = function (s) {
+  const ctx = this.ctx;
+  if (mining.drillSlot() < 0) {
+    mining.refreshTools();
+    if (mining.drillSlot() < 0) return this.fail("no drill/pickaxe in the hotbar");
+  }
+  if (player.heldItemSlot() !== mining.drillSlot()) { ctx.miner.press(false); mining.holdDrill(); return { s: "busy" }; }
+
+  const lookKey = s.vertical ? "down" : s.h.x + "," + s.h.z;
+  if (this.lookKey !== lookKey) {
+    ctx.miner.press(false);
+    let p;
+    if (s.vertical) p = s.aims[0];
+    else {
+      const e = world.eyePos(), pitch = ctx.cfg.tunnelPitch() * Math.PI / 180;
+      p = U.v(e.x + s.h.x * Math.cos(pitch) * 3, e.y - Math.sin(pitch) * 3, e.z + s.h.z * Math.cos(pitch) * 3);
+    }
+    rotation.miningRotateToVec(p.x, p.y, p.z);
+    this.lookKey = lookKey;
+    this.lookAt = U.now();
+    return { s: "busy" };
+  }
+  if (!rotation.miningIsDone() && rotation.miningIsRotating() && U.now() - this.lookAt < 1500) return { s: "busy" };
+
+  if (!this.sneaking) { player.setSneaking(true); this.sneaking = true; }
+  const solid = s.clear.filter((c) => !ctx.blocks.info(c).passable);
+  if (!solid.length) {
+    if (s.vertical) ctx.miner.release(); else ctx.miner.guard(s.holdNext);
+    s.phase = s.vertical ? "fall" : "walk";
+    s.walkStart = U.now();
+    return { s: "busy" };
+  }
+  for (let i = 0; i < solid.length; i++) {
+    const why = ctx.blocks.mineBlockReason(solid[i]);
+    if (why) return this.badStep(why + " at " + U.fmt(solid[i]));
+  }
+  if (ctx.cfg.useAbility() && mining.abilityReady() && !mining.abilityActive() && !mining.activatingAbility()) mining.ability();
+
+  // hold LMB only while the crosshair is on one of this step's (or the next) tunnel blocks
+  const holding = ctx.miner.guard(s.hold);
+  if (s.solidLeft !== solid.length) { s.solidLeft = solid.length; s.progressAt = U.now(); }
+  const stalled = U.now() - (s.progressAt || s.started);
+  if (!holding && stalled > 700) {
+    // crosshair is not on the block: we are off-centre (e.g. pushed). Shuffle back to the cell centre, crouched.
+    const c = U.v(s.from.x + 0.5, s.from.y, s.from.z + 0.5);
+    if (U.distFlat(player.pos(), c) > 0.2) { player.setOptimalKeysTo(c.x, c.y, c.z, true); return { s: "busy" }; }
+  }
+  player.resetWASD(); // standing still while the block breaks (no wall kissing)
+  if (stalled > 3000 && !s.relooked) { s.relooked = true; this.lookKey = null; } // one fresh look, never a sweep
+  if (stalled > 9000) {
+    solid.forEach((c) => ctx.blocks.blacklist.set(U.key(c), "did not break while tunnelling"));
+    return this.badStep("could not mine " + U.fmt(solid[0]) + " (unbreakable or not under the crosshair)");
+  }
+  return { s: "busy" };
 };
 
 Digger.prototype.reset = function (target) {
   this.release();
-  if (!target) this.axis = null; // keep the axis across hop targets, forget it when movement stops
+  if (!target) { this.axis = null; this.lastDir = null; this.sidesteps = 0; this.sideDir = null; } // forget when movement stops
   this.target = target ? U.floor(target) : null;
   this.dug = 0;
   this.badSteps.clear();
@@ -81,11 +142,16 @@ Digger.prototype.planStep = function (feet, t, flat) {
   if (!first) first = Math.abs(dx) >= Math.abs(dz) ? "x" : "z";
   if (first === "x") { if (dx) dirs.push(ax); if (dz) dirs.push(az); }
   else { if (dz) dirs.push(az); if (dx) dirs.push(ax); }
-  // straight line blocked (gem, liquid, structure...)? a one-block sidestep goes around it
-  if (dirs.length === 1) {
+  // straight line blocked (gem, liquid, structure...)? a one-block sidestep goes around it, but never a U-turn
+  // (stepping back the way we came made the camera flip 180 degrees back and forth) and at most 3 in a row
+  if (dirs.length === 1 && (this.sidesteps || 0) < 3) {
     const d0 = dirs[0];
-    dirs.push(U.v(d0.z, 0, d0.x), U.v(-d0.z, 0, -d0.x));
+    const side = [U.v(d0.z, 0, d0.x), U.v(-d0.z, 0, -d0.x)];
+    if (this.sideDir) side.sort((a, b) => (U.same(a, this.sideDir) ? -1 : 0) - (U.same(b, this.sideDir) ? -1 : 0)); // keep the same side
+    side.forEach((d) => dirs.push(d));
   }
+  const last = this.lastDir;
+  for (let i = dirs.length - 1; i >= 0; i--) if (last && dirs[i].x === -last.x && dirs[i].z === -last.z) dirs.splice(i, 1);
   const reasons = [];
 
   if (dirs.length === 0) {
@@ -153,7 +219,19 @@ Digger.prototype.planStep = function (feet, t, flat) {
     step.place = [];
     const why = this.checkCells(step.clear);
     if (why) { reasons.push(why); this.badSteps.add(bad); continue; }
-    const sup = B.info(step.supportCell);
+    let sup = B.info(step.supportCell);
+    if (step.up && sup.passable && !sup.liquid) {
+      // target is higher but the way ahead is open floor: walk on level, climb later where there is a step
+      const lvl = { clear: [U.up(n, 1), n], feet: n, supportCell: U.up(n, -1), up: false,
+        aims: [face(U.up(n, 1), 0.25), U.v(n.x + 0.5, n.y + 0.99, n.z + 0.5)] };
+      const lvlSup = B.info(lvl.supportCell);
+      if (lvlSup.loaded && lvlSup.solid && !this.checkCells(lvl.clear)) {
+        Object.assign(step, lvl);
+        step.hold = new Set(step.clear.map(U.key));
+        step.holdNext.forEach((kk) => step.hold.add(kk));
+        sup = lvlSup;
+      }
+    }
     if (!sup.loaded) { reasons.push("unknown floor at " + U.fmt(step.supportCell)); this.badSteps.add(bad); continue; }
     if (sup.liquid) { reasons.push("liquid floor at " + U.fmt(step.supportCell)); this.badSteps.add(bad); continue; }
     if (!sup.solid) {
@@ -189,7 +267,14 @@ Digger.prototype.tick = function (targetFeet, arrive, flat) {
     if (st.arrived) { this.release(); return { s: "arrived" }; }
     if (st.fail) return this.fail(st.fail);
     this.step = st;
-    if (st.axis) this.axis = st.axis;
+    if (st.h) {
+      // a sidestep is a step across the main direction toward the target
+      const tdx = Math.sign(t.x - feet.x), tdz = Math.sign(t.z - feet.z);
+      const along = (st.h.x && st.h.x === tdx) || (st.h.z && st.h.z === tdz);
+      if (along) { this.sidesteps = 0; this.sideDir = null; } else { this.sidesteps = (this.sidesteps || 0) + 1; this.sideDir = st.h; }
+      this.lastDir = st.h;
+    }
+    if (st.axis && (!st.h || this.sidesteps === 0)) this.axis = st.axis;
     this.step.phase = st.vertical ? "center" : "clear";
     this.step.started = U.now();
     this.step.from = feet;
@@ -203,13 +288,12 @@ Digger.prototype.tick = function (targetFeet, arrive, flat) {
     const c = U.v(s.from.x + 0.5, s.from.y, s.from.z + 0.5);
     const off = U.distFlat(player.pos(), c);
     if (off > 0.15) {
-      player.setSneaking(true); // slow, precise steps; also stops us from walking off an edge
+      if (!this.sneaking) { player.setSneaking(true); this.sneaking = true; } // slow, precise steps, no edge slips
       player.setOptimalKeysTo(c.x, c.y, c.z, true);
       if (U.now() - s.started > 4000) return this.badStep("could not centre for digging down");
       return { s: "busy" };
     }
     player.resetWASD();
-    player.setSneaking(false);
     if (player.speed() > 0.01 || !player.onGround()) return { s: "busy" }; // let the momentum die
     s.phase = "clear";
     return { s: "busy" };
@@ -227,6 +311,8 @@ Digger.prototype.tick = function (targetFeet, arrive, flat) {
     if (U.now() - s.walkStart > 4000) return this.badStep("did not fall into the shaft at " + U.fmt(s.feet));
     return { s: "busy" };
   }
+
+  if (s.phase === "clear" && !s.up && !(s.extra && s.extra.length)) return this.driveTick(s);
 
   if (s.phase === "clear") {
     player.resetWASD();
@@ -291,6 +377,9 @@ Digger.prototype.tick = function (targetFeet, arrive, flat) {
     }
     if (!s.aheadLeft) ctx.miner.press(false);
     else ctx.miner.guard(s.holdNext); // keep mining the next tunnel block while stepping forward, never anything else
+    // crouch-walk (cannot slide off an edge), except when this step is a deliberate drop
+    if (s.drop && this.sneaking) { player.setSneaking(false); this.sneaking = false; }
+    else if (!s.drop && !s.up && !this.sneaking) { player.setSneaking(true); this.sneaking = true; }
     player.setOptimalKeysTo(goal.x, goal.y, goal.z, true);
     if (s.up && player.onGround() && U.distFlat(player.pos(), goal) < 1.3) player.jump();
     if (U.now() - s.walkStart > 6000) return this.badStep("could not step into " + U.fmt(s.feet));

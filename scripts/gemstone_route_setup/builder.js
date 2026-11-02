@@ -368,18 +368,20 @@ Builder.prototype.lineCells = function (from, to) {
     !B.info(c).passable);
 };
 
-// Can the block be mined while standing on this warp cobble? (in reach + visible from that eye)
-Builder.prototype.reachableFrom = function (support, cell) {
-  const reach = this.ctx.cfg.reach();
-  const eyes = U.eyesOn(support);
-  for (let i = 0; i < eyes.length; i++) {
-    if (U.dist(eyes[i], U.center(cell)) > reach) continue;
-    const h = world.raytraceFrom(eyes[i], U.center(cell));
-    if (h.block && U.same(U.floor(h.block), cell)) return true;
-  }
-  return false;
+// Closest point of the A->B line to a block, kept inside that block: aiming there keeps the camera on the line.
+Builder.prototype.linePoint = function (a, b, cell) {
+  const c = U.center(cell);
+  const ab = U.sub(b, a), ac = U.sub(c, a);
+  const len2 = ab.x * ab.x + ab.y * ab.y + ab.z * ab.z || 1;
+  const t = Math.max(0, Math.min(1, (ac.x * ab.x + ac.y * ab.y + ac.z * ab.z) / len2));
+  const p = U.add(a, U.scale(ab, t));
+  const clamp = (v, lo) => Math.max(lo + 0.05, Math.min(lo + 0.95, v));
+  return U.v(clamp(p.x, cell.x), clamp(p.y, cell.y), clamp(p.z, cell.z));
 };
 
+// Lines are cleared in route order like a player walks the route (24 -> 25 -> 26 ...): stand on warp A, look
+// along the line toward B and mine the obstructions in order from A. One that is out of reach: tunnel toward it
+// (where the blocks to break are), mine it, carry on toward B. The next line then starts from B.
 Builder.prototype.clearLine = function (w, next) {
   const ctx = this.ctx;
   if (!next) return { s: "done" };
@@ -388,57 +390,67 @@ Builder.prototype.clearLine = function (w, next) {
   if (!B.info(from).loaded) return this.travel(from, "warp #" + w.number);
   if (!B.info(to).loaded) return this.travel(to, "warp #" + next.number);
   const label = "line #" + w.number + " -> #" + next.number;
-
-  const statusSays = S.has(w, ["lineBlocked", "lineToMine"]);
-  let obs = this.lineObstruction(from, to, false);
-  if (!obs) {
-    if (!statusSays) { this.lineWaitStart = 0; return { s: "done" }; }
-    if (U.now() - this.lastChangeAt < 3000) return { s: "busy" }; // let Route Status catch up
-    obs = this.lineObstruction(from, to, true);
-    if (!obs) {
-      if (!this.lineWaitStart) this.lineWaitStart = U.now();
-      if (U.now() - this.lineWaitStart < 10000) return { s: "busy" };
-      this.lineWaitStart = 0;
-      return { s: "fail", fatal: true, reason: "Route Status reports " + label +
-        " blocked, but no obstruction is visible to the rays. Manual step: look along the line and clear what Polinex highlights." };
-    }
-  }
-  this.lineWaitStart = 0;
+  const lkey = U.key(from) + ">" + U.key(to);
+  if (!this.ls || this.ls.key !== lkey) this.ls = { key: lkey, phase: "toA", tries: 0 };
+  const ls = this.ls;
   const allowGem = ctx.cfg.mineGemsOnLine();
 
-  // Prefer a block we can mine standing on either end of the line (we are often already on one of them).
-  let target = obs.block, stand = null;
-  const cells = this.lineCells(from, to);
-  const ends = [from, to].filter((e) => B.isCobble(B.info(e).id));
-  const order = cells.slice(0, 6).concat(cells.slice(-6).reverse());
-  for (let i = 0; i < order.length && !stand; i++) {
-    const c = order[i];
-    if (this.unreachable.has(U.key(c)) || B.mineBlockReason(c, { allowGem: allowGem })) continue;
-    for (let j = 0; j < ends.length; j++) {
-      if (this.reachableFrom(ends[j], c)) { target = c; stand = ends[j]; break; }
-    }
+  // remaining obstructions, nearest to A first
+  let obs = this.lineCells(from, to);
+  const statusSays = S.has(w, ["lineBlocked", "lineToMine"]);
+  if (!obs.length) {
+    const ray = this.lineObstruction(from, to, false) || (statusSays && U.now() - this.lastChangeAt >= 3000 ? this.lineObstruction(from, to, true) : null);
+    if (ray) obs = [ray.block];
   }
-
+  if (!obs.length) {
+    if (!statusSays) { this.lineWaitStart = 0; this.ls = null; return { s: "done" }; }
+    if (U.now() - this.lastChangeAt < 3000) return { s: "busy" }; // let Route Status catch up
+    if (!this.lineWaitStart) this.lineWaitStart = U.now();
+    if (U.now() - this.lineWaitStart < 10000) return { s: "busy" };
+    this.lineWaitStart = 0;
+    return { s: "fail", fatal: true, reason: "Route Status reports " + label +
+      " blocked, but no obstruction is visible to the rays. Manual step: look along the line and clear what Polinex highlights." };
+  }
+  this.lineWaitStart = 0;
+  const target = obs[0];
   const tk = U.key(target);
+  const why = B.mineBlockReason(target, { allowGem: allowGem });
+  if (why) return { s: "fail", fatal: true, reason: label + " blocked by " + why };
   if (this.unreachable.has(tk)) {
     return { s: "fail", fatal: true, reason: label + ": cannot reach the obstruction " + U.fmt(target) + " (" + this.unreachable.get(tk) +
       "). Manual step: mine that block (or the blocks around it), then start again." };
   }
-  const why = B.mineBlockReason(target, { allowGem: allowGem });
-  if (why) return { s: "fail", fatal: true, reason: label + " blocked by " + why };
-  ctx.detail = "Clearing " + label + " at " + U.fmt(target) + (stand ? " from warp #" + (U.same(stand, from) ? w.number : next.number) : "");
-  const r = this.action("mine", target, null, {
+
+  // 1) start the line standing on warp A (skip if we cannot get onto it: work from where we are)
+  if (ls.phase === "toA") {
+    const onA = U.same(player.blockPos(), U.up(from, 1));
+    if (onA || !B.isCobble(B.info(from).id) || ls.tries > 0) { ls.phase = "sweep"; ctx.mover.stop(); return { s: "busy" }; }
+    ctx.detail = "Walking to warp #" + w.number + " to start " + label;
+    // walk only: if we cannot simply walk onto the cobble we clear from where we are (no digging up to it)
+    ctx.mover.goTo({ id: "lineA:" + lkey, pos: from, supports: [from], near: 1, allowEther: false, allowDig: false, label: "warp #" + w.number,
+      arrive: () => U.same(player.blockPos(), U.up(from, 1)) });
+    const r = ctx.mover.tick();
+    if (r.s === "fail") { ls.tries++; ctx.log("Cannot stand on warp #" + w.number + " (" + r.reason + "); clearing from here"); ctx.mover.stop(); }
+    if (r.s === "arrived") { ctx.mover.stop(); ls.phase = "sweep"; }
+    return { s: "busy" };
+  }
+
+  // 2) mine the next obstruction along the line; out of reach -> tunnel toward it (action relocation digs there)
+  const eyeA = U.eyesOn(from)[0], topB = U.v(to.x + 0.5, to.y + 0.98, to.z + 0.5);
+  ctx.detail = "Clearing " + label + " at " + U.fmt(target) + " (" + obs.length + " left)";
+  const hold = new Set(obs.slice(0, 6).map(U.key)); // the held button may run on into the next line blocks
+  const r = this.action("mine", target, this.linePoint(eyeA, topB, target), {
     allowGem: allowGem,
-    prefer: stand ? [stand] : ends,
+    hold: hold,
+    tunnel: true, // reach it by tunnelling toward it, not by searching stand spots all over the cave
     fallbackBomb: ctx.cfg.useBombs() && ctx.cfg.bombLines() && !this.bombTried.has(tk),
-    bombFrom: stand || from,
-    lineCell: true,
+    bombFrom: null,
   });
   if (r.s === "fail") {
-    // remember it: the same block is never retried in a loop, the next attempt reports it right away
     this.unreachable.set(tk, r.reason);
     ctx.warn(label + ": giving up on " + U.fmt(target) + " for now: " + r.reason);
   }
+  if (r.s === "done") return { s: "busy" }; // next obstruction
   return r;
 };
 
@@ -496,7 +508,7 @@ Builder.prototype.action = function (kind, cell, aim, opts) {
   const k = kind + ":" + U.key(c);
   if (!this.act || this.act.key !== k) {
     this.release();
-    this.act = { key: k, kind: kind, cell: c, aim: aim || U.center(c), opts: opts || {}, phase: "try", moves: 0, pre: null,
+    this.act = { key: k, kind: kind, cell: c, aim: aim || U.center(c), explicitAim: aim || null, opts: opts || {}, phase: "try", moves: 0, pre: null,
       pillar: kind === "place" && !!(opts && opts.pillar) && ctx.placer.canPillar(c), pmoves: 0, pillarMove: false };
     // pillar (jump + place under) only for columns under a floating waypoint or as a last resort
   }
@@ -506,6 +518,14 @@ Builder.prototype.action = function (kind, cell, aim, opts) {
     const r = ctx.mover.tick();
     if (r.s === "busy") return r;
     if (r.s === "arrived") { ctx.mover.stop(); a.phase = "try"; a.pillarMove = false; return { s: "busy" }; }
+    if (a.opts.tunnel && !a.tunnelFailed) {
+      // cannot tunnel there (pit, no floor, gems...): walk around to a spot that reaches it instead
+      a.tunnelFailed = true;
+      ctx.log("Cannot tunnel to " + U.fmt(c) + " (" + r.reason + "); looking for a spot that reaches it");
+      ctx.mover.stop();
+      a.phase = "try";
+      return this.relocate(a, r.reason);
+    }
     if (a.pillarMove) { // cannot get onto the pillar spot: try a normal placement instead
       ctx.mover.stop();
       a.pillar = false;
@@ -547,7 +567,7 @@ Builder.prototype.action = function (kind, cell, aim, opts) {
   }
 
   let r;
-  if (kind === "mine") r = ctx.miner.tick(c, a.opts);
+  if (kind === "mine") r = ctx.miner.tick(c, a.explicitAim ? Object.assign({}, a.opts, { aim: a.explicitAim }) : a.opts);
   else if (kind === "place") r = ctx.placer.tick(c);
   else r = ctx.bomber.tick(a.aim);
   if (r.s === "busy") return r;
@@ -586,14 +606,16 @@ Builder.prototype.relocate = function (a, reason) {
   const here = U.up(player.blockPos(), -1);
   // never stand inside / on top of the cell we are about to fill
   const avoid = new Set(a.kind === "place" ? [U.key(U.up(a.cell, -1)), U.key(U.up(a.cell, -2))] : []);
-  const supports = this.standSupports(a.kind, a.cell, a.aim, a.moves > 1 ? null : a.opts)
+  // tunnel mode (line obstructions): no stand-spot hunting around the cave, dig toward the block itself
+  const tunnelMode = a.opts.tunnel && !a.tunnelFailed;
+  const supports = tunnelMode ? [] : this.standSupports(a.kind, a.cell, a.aim, a.moves > 1 ? null : a.opts)
     .filter((s) => !U.same(s, here) && !avoid.has(U.key(s)));
   if (a.kind === "place" && !supports.length) { const pr = lastResortPillar(); if (pr) return pr; }
   const self = this;
   ctx.mover.stop();
   ctx.mover.goTo({
     id: "act:" + a.key + ":" + a.moves, pos: a.cell, supports: supports.length ? supports : null, near: 4, avoid: avoid,
-    digTarget: a.cell, allowEther: false, label: a.kind + " " + U.fmt(a.cell),
+    tunnelOnly: tunnelMode, digTarget: tunnelMode ? U.up(a.cell, -1) : a.cell, allowEther: false, label: a.kind + " " + U.fmt(a.cell),
     arrive: () => self.canActFromHere(a.kind, a.cell, a.aim),
   });
   a.phase = "move";

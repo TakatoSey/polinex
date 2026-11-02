@@ -68,7 +68,11 @@ Miner.prototype.aimPoint = function (b, opts, eye) {
     const h = world.raytraceFrom(eye, p);
     return !!h.block && U.same(U.floor(h.block), b);
   };
-  if (opts && opts.aim && hits(opts.aim)) return opts.aim;
+  if (opts && opts.aim) {
+    const sa = U.steadyAim(opts.aim);
+    if (hits(sa)) return sa;
+    if (hits(opts.aim)) return opts.aim;
+  }
   const c = U.center(b);
   let best = null;
   for (let k = 0; k < U.DIRS6.length; k++) {
@@ -86,7 +90,7 @@ Miner.prototype.aimPoint = function (b, opts, eye) {
       if (!best || turn < best.turn) best = { p: p, turn: turn };
     }
   }
-  if (best) return best.p;
+  if (best) { const sa = U.steadyAim(best.p); return hits(sa) ? sa : best.p; }
   const vp = mining.visiblePoint(b);
   return vp ? U.v(vp.x, vp.y, vp.z) : null;
 };

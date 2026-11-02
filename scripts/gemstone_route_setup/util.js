@@ -45,7 +45,20 @@ function eyesOn(support) {
   ];
 }
 
+// An aim point (almost) straight above/below the eye has no defined yaw: the camera would spin to some random
+// direction. Shift it a little forward along the direction we already face so the yaw stays where it is.
+function steadyAim(p, shift) {
+  const e = world.eyePos();
+  const dx = p.x - e.x, dz = p.z - e.z;
+  const flat = Math.sqrt(dx * dx + dz * dz);
+  const need = shift === undefined ? 0.3 : shift;
+  if (flat >= need) return p;
+  const yaw = player.yaw() * Math.PI / 180;
+  return v(p.x - Math.sin(yaw) * (need - flat), p.y, p.z + Math.cos(yaw) * (need - flat));
+}
+
 module.exports = {
+  steadyAim: steadyAim,
   DIRS6: DIRS6, HORIZ4: HORIZ4,
   v: v, floor: floor, add: add, sub: sub, scale: scale, up: up, dist: dist, distFlat: distFlat,
   center: center, top: top, same: same, key: key, fmt: fmt, now: now, arr: arr, inBox: inBox,

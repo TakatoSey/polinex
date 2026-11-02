@@ -178,7 +178,7 @@ function lookAt(x, y, z) {
   const l = Math.sqrt(d.x * d.x + d.y * d.y + d.z * d.z) || 1;
   const nd = { x: d.x / l, y: d.y / l, z: d.z / l };
   if (P.look) stats.turnDeg += Math.acos(Math.max(-1, Math.min(1, nd.x * P.look.x + nd.y * P.look.y + nd.z * P.look.z))) * 180 / Math.PI;
-  if (process.env.PITCH && state === "GRS_INSPECT") {
+  if (process.env.PITCH && (state === "GRS_INSPECT" || process.env.PITCH === "all")) {
     const pitch = -Math.asin(nd.y) * 180 / Math.PI, yaw = Math.atan2(-nd.x, nd.z) * 180 / Math.PI;
     const stp = DEBUG.ctx && DEBUG.ctx.mover.digger.step; console.log("LOOK yaw " + yaw.toFixed(0) + " pitch " + pitch.toFixed(0) + " P " + P.x.toFixed(2) + " aimpt " + [x, y, z].map((q) => q.toFixed(2)).join(",") + " stepAims " + (stp && stp.aims ? JSON.stringify(stp.aims) : "-") + " clear " + (stp ? JSON.stringify(stp.clear) : "-"));
   }
