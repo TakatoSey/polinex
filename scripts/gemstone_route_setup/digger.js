@@ -61,9 +61,12 @@ Digger.prototype.landingDepth = function (cell, max) {
   return 0;
 };
 
-Digger.prototype.planStep = function (feet, t) {
+// Never mines a 45 degree staircase downwards (that pattern trips failsafes): going down means tunnelling
+// level until we are above the target, then a straight vertical shaft (or a safe drop off a ledge).
+// flat: ignore height completely (inspection only needs X/Z, the whole Y range is always loaded).
+Digger.prototype.planStep = function (feet, t, flat) {
   const B = this.ctx.blocks;
-  const dx = t.x - feet.x, dy = t.y - feet.y, dz = t.z - feet.z;
+  const dx = t.x - feet.x, dy = flat ? 0 : t.y - feet.y, dz = t.z - feet.z;
   const dirs = [];
   const ax = { x: Math.sign(dx), y: 0, z: 0 }, az = { x: 0, y: 0, z: Math.sign(dz) };
   if (Math.abs(dx) >= Math.abs(dz)) { if (dx) dirs.push(ax); if (dz) dirs.push(az); }
@@ -94,9 +97,7 @@ Digger.prototype.planStep = function (feet, t) {
     let step;
     if (dy >= 1) {
       step = { clear: [U.up(feet, 2), U.up(n, 2), U.up(n, 1)], feet: U.up(n, 1), supportCell: n, up: true };
-    } else if (dy <= -1) {
-      step = { clear: [U.up(n, 1), n, U.up(n, -1)], feet: U.up(n, -1), supportCell: U.up(n, -2), up: false };
-    } else {
+    } else { // level (also while the target is lower: descend later with a vertical shaft)
       step = { clear: [U.up(n, 1), n], feet: n, supportCell: U.up(n, -1), up: false };
     }
     step.badKey = bad;
@@ -117,17 +118,17 @@ Digger.prototype.planStep = function (feet, t) {
   return { fail: reasons.length ? reasons[0] : "no diggable direction" };
 };
 
-Digger.prototype.tick = function (targetFeet, arrive) {
+Digger.prototype.tick = function (targetFeet, arrive, flat) {
   const ctx = this.ctx;
   const t = U.floor(targetFeet);
   if (!this.target || !U.same(this.target, t)) this.reset(t);
   if (arrive && arrive()) { this.release(); return { s: "arrived" }; }
   const feet = player.blockPos();
-  if (U.distFlat(feet, t) < 1 && Math.abs(feet.y - t.y) < 1) { this.release(); return { s: "arrived" }; }
+  if (U.distFlat(feet, t) < 1 && (flat || Math.abs(feet.y - t.y) < 1)) { this.release(); return { s: "arrived" }; }
   if (this.dug > ctx.cfg.maxDigLen()) return this.fail("dug " + this.dug + " blocks without arriving (Max Dig Length)");
 
   if (!this.step) {
-    const st = this.planStep(feet, t);
+    const st = this.planStep(feet, t, flat);
     if (st.arrived) { this.release(); return { s: "arrived" }; }
     if (st.fail) return this.fail(st.fail);
     this.step = st;
@@ -151,6 +152,9 @@ Digger.prototype.tick = function (targetFeet, arrive) {
       }
     }
     if (!cell) {
+      // release left click NOW: a held attack keeps mining whatever is under the crosshair next
+      // (usually the floor ahead), which turns a level tunnel into a 45 degree staircase down
+      ctx.miner.release();
       s.phase = s.place.length ? "place" : "walk";
       s.walkStart = U.now();
       return { s: "busy" };

@@ -304,9 +304,10 @@ function inspectGoal(st, w) {
   if (w.problems.indexOf("notLoaded") < 0 && w.problems.indexOf("lineNotLoaded") >= 0 && next) pos = next.pos;
   const number = w.number;
   return {
-    id: "inspect:" + number + ":" + U.key(pos), pos: pos, near: 4, approach: true,
+    // flat: Y is always fully loaded, only X/Z distance matters -> never climb or dig down while inspecting
+    id: "inspect:" + number + ":" + U.key(pos), pos: pos, near: 4, approach: true, flat: true,
     label: "unchecked warp #" + number,
-    arrive: () => warpChecked(number),
+    arrive: () => warpChecked(number) || U.distFlat(player.pos(), pos) < 3,
   };
 }
 
@@ -323,7 +324,7 @@ m.onState("GRS_INSPECT", () => {
     let near = rt.waypoints[0], nd = Infinity;
     rt.waypoints.forEach((w) => { const d = U.dist(player.pos(), w); if (d < nd) { nd = d; near = w; } });
     ctx.detail = "Leaving the Crystal Nucleus";
-    ctx.mover.goTo({ id: "exit:" + U.key(near), pos: U.v(near.x, near.y, near.z), near: 4, approach: true, label: "route (leaving Nucleus)",
+    ctx.mover.goTo({ id: "exit:" + U.key(near), pos: U.v(near.x, near.y, near.z), near: 4, approach: true, flat: true, label: "route (leaving Nucleus)",
       arrive: () => S.read() !== null });
     const r = ctx.mover.tick();
     if (r.s === "fail") { ctx.setIssue(r.reason); ctx.mover.stop(); }
@@ -373,7 +374,18 @@ m.onState("GRS_INSPECT", () => {
     ctx.setIssue("Inspect #" + tw.number + ": " + r.reason);
     ctx.mover.stop();
     ins.target = null;
-  }
+  } else if (r.s === "arrived" && !warpChecked(tw.number)) {
+    // standing right next to it (X/Z) and Route Status still has not checked it: give the scanner a moment
+    if (!ins.arrivedAt) ins.arrivedAt = U.now();
+    ctx.detail = "At warp #" + tw.number + ", waiting for Route Status to scan it";
+    if (U.now() - ins.arrivedAt > 6000) {
+      ins.failed.set(tw.number, (ins.failed.get(tw.number) || 0) + 1);
+      ctx.setIssue("Warp #" + tw.number + " stays unchecked although we are next to it (" + tw.problems.join(", ") + ")");
+      ctx.mover.stop();
+      ins.target = null;
+      ins.arrivedAt = 0;
+    }
+  } else ins.arrivedAt = 0;
 });
 
 m.onState("GRS_DECIDE", () => {

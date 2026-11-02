@@ -38,7 +38,9 @@ The HUD shows the stage, the current action, the Route Status verdict, the progr
 
 ## How the decisions work
 
-- **Walk or dig**: the native planner plans the walk. The script also estimates the cost of a straight dug passage (break time of the blocks, never through gems, liquids, unknown terrain or structure cores). It digs when `walkCost > digCost × Dig Preference`. A planned path is followed to the end, and a slightly better path that appears later is ignored. To switch from digging back to walking, the walk has to be at least 40% cheaper.
+- **Walk or mine straight**: the native planner only sees loaded terrain, so early in a lobby it often picks a detour and has to come back later. With **Prefer Mining Straight** (default on), the script mines straight toward the target whenever the walking path is longer than `straight distance × Detour Threshold` (1.35) or its first blocks lead *away* from the target. It also mines when `walkCost > digCost × Dig Preference`. It never mines through gems, liquids, unknown terrain or structure cores. A planned path is followed to the end, and a slightly better one found later is ignored. Leaving a tunnel for a walk needs a walk that is at least 40% cheaper *and* not a detour.
+- **Inspection is X/Z only**: the full height is always loaded and only X/Z render in later, so inspection goals are flat. The script tunnels and hops horizontally at its current height and never climbs, Etherwarps or digs down just to check a warp.
+- **No 45° digging down**: the digger has no diagonal-down staircase, because that pattern trips failsafes. To go lower it walks, drops off a ledge onto known ground (max 4 blocks), or tunnels level until it's above the target and then digs a straight vertical shaft. Left-click is released the moment a step's blocks are cleared, and instamined blocks get single clicks, so a held attack can't keep breaking the floor ahead.
 - **Unknown terrain**: unloaded blocks are never treated as air. For far or unloaded targets the mover hops toward loaded spots in the same direction, so it never doubles back.
 - **Etherwarp** only when the goal is at least `Etherwarp Min Rise` blocks up (legit handler `etherwarp.etherwarpTo`, with planner fallback). **Instant Transmission** is optional, and only used on long, straight, open walking segments.
 - **Goblin Queen's Den / Jungle Temple**: only a sphere of `Structure Core Radius` around their centre is avoided (from `skyblock.chStructures()`), not the whole region. A walking path through a core is swapped for a dug one when possible.
@@ -75,6 +77,8 @@ node tools/sim.js basic    # floor waypoint, floating waypoint (column), pillar 
 node tools/sim.js tunnel   # start in a sealed pocket, must dig out
 node tools/sim.js lobby    # Not doable -> no fix -> lobby switch (first retry lands in the same lobby)
 node tools/sim.js fix      # Not doable -> Dynamic Route Fix toggle -> re-inspect corrected route
+node tools/sim.js far      # X/Z render distance, a corridor that leads away first, lower target cavern:
+                           # must mine straight, stay level while inspecting, never dig 45 degrees down
 EXPECT_FAIL=1 node tools/sim.js gem   # gemstone on a line -> stops with a manual-step message
 ```
 

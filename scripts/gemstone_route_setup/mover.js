@@ -112,11 +112,12 @@ Mover.prototype.goTo = function (goal) {
   this.mode = "decide";
 };
 
-Mover.prototype.standablesNear = function (center, near, limit) {
+Mover.prototype.standablesNear = function (center, near, limit, dyRange) {
   const B = this.ctx.blocks;
   const p = U.floor(center);
   const out = [];
-  for (let dy = -near; dy <= near; dy++) {
+  const ry = dyRange === undefined ? near : dyRange;
+  for (let dy = -ry; dy <= ry; dy++) {
     for (let dx = -near; dx <= near; dx++) {
       for (let dz = -near; dz <= near; dz++) {
         const feet = U.v(p.x + dx, p.y + dy, p.z + dz);
@@ -140,6 +141,26 @@ Mover.prototype.candidates = function () {
   const near = g.near === undefined ? 3 : g.near;
   const target = U.floor(g.pos);
   const me = player.pos();
+
+  // Flat goals (inspection): only X/Z matter, the full height is always loaded. Hop horizontally at our
+  // own height, never climbing or digging down toward the target's Y.
+  if (g.flat && U.distFlat(me, target) > 12) {
+    const dxz = U.distFlat(me, target);
+    const dir = U.v((target.x - me.x) / dxz, 0, (target.z - me.z) / dxz);
+    const feetY = Math.floor(me.y);
+    const steps = [32, 20, 10];
+    for (let i = 0; i < steps.length; i++) {
+      if (steps[i] >= dxz) continue;
+      const hop = U.floor(U.v(me.x + dir.x * steps[i], feetY, me.z + dir.z * steps[i]));
+      if (!this.ctx.blocks.info(hop).loaded) continue;
+      const c = this.standablesNear(hop, 4, 4, 2);
+      if (c.length) { this.hop = hop; this.cands = c; return this.cands; }
+    }
+    this.hop = U.floor(U.v(me.x + dir.x * Math.min(dxz, 16), feetY, me.z + dir.z * Math.min(dxz, 16)));
+    this.cands = [];
+    return this.cands;
+  }
+
   const far = U.dist(me, target) > 48;
   const loaded = this.ctx.blocks.info(target).loaded;
   if (g.approach && (far || !loaded)) {
@@ -165,7 +186,7 @@ Mover.prototype.candidates = function () {
 
 Mover.prototype.wantsEther = function (support) {
   const g = this.goal;
-  if (g.allowEther === false) return false;
+  if (g.allowEther === false || g.flat) return false; // inspection never needs to climb
   if (this.etherFailed.has(U.key(support))) return false;
   const rise = support.y + 1 - player.y();
   if (rise < this.ctx.cfg.etherMinRise()) return false;
@@ -250,6 +271,37 @@ Mover.prototype.pathLength = function (nodes) {
     prev = p;
   }
   return len;
+};
+
+// Where the digger should aim for a candidate: flat goals keep our own height.
+Mover.prototype.digGoal = function (support) {
+  const feet = U.up(support, 1);
+  if (this.goal && this.goal.flat) return U.v(feet.x, Math.floor(player.y()), feet.z);
+  return feet;
+};
+
+// A walking path planned on partly loaded terrain is often a detour: much longer than the straight line,
+// or it starts by walking away from the real goal (and later has to come back). Mining straight is faster.
+Mover.prototype.isDetour = function (nodes, walkLen) {
+  const ctx = this.ctx;
+  const me = player.pos();
+  const end = nodes.length ? U.v(nodes[nodes.length - 1].x, nodes[nodes.length - 1].y, nodes[nodes.length - 1].z) : me;
+  const straight = this.goal && this.goal.flat ? U.distFlat(me, end) : U.dist(me, end);
+  if (walkLen > straight * ctx.cfg.directFactor() + 3) return true;
+  const goal = this.goal ? this.goal.pos : end;
+  const gx = goal.x - me.x, gz = goal.z - me.z;
+  const gl = Math.sqrt(gx * gx + gz * gz);
+  if (gl < 8) return false;
+  // first ~6 blocks of the path
+  let probe = null;
+  for (let i = 0; i < nodes.length; i++) {
+    const n = U.v(nodes[i].x, nodes[i].y, nodes[i].z);
+    if (U.distFlat(me, n) >= 6) { probe = n; break; }
+  }
+  if (!probe) return false;
+  const px = probe.x - me.x, pz = probe.z - me.z;
+  const pl = Math.sqrt(px * px + pz * pz) || 1;
+  return (px / pl) * (gx / gl) + (pz / pl) * (gz / gl) < -0.1; // heading away from the goal
 };
 
 Mover.prototype.pathCrossesCore = function (nodes) {
@@ -360,19 +412,22 @@ Mover.prototype.tickPlan = function () {
   const q = this.query;
   this.query = null;
   const status = q.status();
-  const feetC = U.up(c, 1);
-  const rise = feetC.y - player.y();
+  const feetC = this.digGoal(c);
+  const rise = U.up(c, 1).y - player.y();
 
   if (status === "found") {
     const nodes = U.arr(q.result());
     const walkLen = this.pathLength(nodes);
     const digEst = this.digCost(player.blockPos(), feetC);
     const crossesCore = this.pathCrossesCore(nodes);
-    if (digEst < Infinity && (walkLen > digEst * ctx.cfg.digFactor() + 4 || crossesCore)) {
+    const detour = this.isDetour(nodes, walkLen);
+    const slower = walkLen > digEst * ctx.cfg.digFactor() + 4;
+    if (digEst < Infinity && ((ctx.cfg.preferDirect() && detour) || slower || crossesCore)) {
       this.digTarget = feetC;
       this.digFinal = false;
       this.mode = "dig";
-      ctx.log("Digging (" + digEst.toFixed(0) + ") instead of walking (" + walkLen.toFixed(0) + ")" + (crossesCore ? " to avoid a structure core" : ""));
+      ctx.log("Mining straight (" + digEst.toFixed(0) + ") instead of walking (" + walkLen.toFixed(0) + ")" +
+        (crossesCore ? " to avoid a structure core" : detour ? ": walking path is a detour" : ""));
       return { s: "busy" };
     }
     if (!nodes.length || !nav.followPath(nodes)) return this.nextCandidateBusy("walk rejected");
@@ -425,7 +480,7 @@ Mover.prototype.tickWalk = function () {
   else if (!nav.awaitingPath() && U.now() - this.lastMoveAt > 5000) {
     try { nav.stop(); } catch (e) { /* idle */ }
     if (++this.walkFails >= 2) {
-      const feetC = U.up(this.cand, 1);
+      const feetC = this.digGoal(this.cand);
       if (this.digCost(player.blockPos(), feetC) < Infinity) { this.digTarget = feetC; this.digFinal = false; this.mode = "dig"; return { s: "busy" }; }
       return this.nextCandidateBusy("stuck while walking");
     }
@@ -551,7 +606,7 @@ Mover.prototype.tickDig = function () {
   const ctx = this.ctx;
   const g = this.goal;
   const arriveFn = () => this.arrived();
-  const r = this.digger.tick(this.digTarget, arriveFn);
+  const r = this.digger.tick(this.digTarget, arriveFn, !!g.flat); // flat goals never dig up or down
   if (r.s === "arrived") {
     if (this.arrived()) { this.mode = "done"; return { s: "arrived" }; }
     if (this.hop) { this.digExhausted = false; return this.hopDone(); }
@@ -572,8 +627,8 @@ Mover.prototype.tickDig = function () {
       if (q.status() === "found") {
         const nodes = U.arr(q.result());
         const walkLen = this.pathLength(nodes);
-        const remaining = this.digCost(player.blockPos(), U.up(this.cand, 1));
-        if (walkLen < remaining * 0.6 && !this.pathCrossesCore(nodes) && nav.followPath(nodes)) {
+        const remaining = this.digCost(player.blockPos(), this.digGoal(this.cand));
+        if (walkLen < remaining * 0.6 && !this.isDetour(nodes, walkLen) && !this.pathCrossesCore(nodes) && nav.followPath(nodes)) {
           this.digger.release();
           this.path = nodes;
           this.enterWalk();

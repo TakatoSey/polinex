@@ -79,7 +79,13 @@ Miner.prototype.tick = function (block, opts) {
   if (ctx.cfg.useAbility() && mining.abilityReady() && !mining.abilityActive() && !mining.activatingAbility()) {
     mining.ability();
   }
-  if (!this.holding) { player.setKey("attack", true); this.holding = true; }
+  // Instamined blocks get one click per tick instead of a held button: a hold would keep breaking
+  // whatever is behind the block (often the floor) before the next tick can release it.
+  const instant = c.prev >= 0 && c.prev <= 1;
+  if (instant) {
+    if (this.holding) { player.setKey("attack", false); this.holding = false; }
+    player.leftClick();
+  } else if (!this.holding) { player.setKey("attack", true); this.holding = true; }
 
   c.prev = mining.ticksLeft(b, c.prev);
   if (c.expected < 0 && c.prev > 0) c.expected = c.prev;

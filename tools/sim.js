@@ -14,8 +14,10 @@ const scenarioName = process.argv[2] || "basic";
 let simTime = 1_700_000_000_000;
 const blocks = new Map();
 const K = (x, y, z) => Math.floor(x) + "," + Math.floor(y) + "," + Math.floor(z);
-const BOUNDS = { x0: 0, x1: 70, y0: 40, y1: 100, z0: 0, z1: 70 };
-function loaded(x, y, z) { return x >= BOUNDS.x0 && x <= BOUNDS.x1 && y >= BOUNDS.y0 && y <= BOUNDS.y1 && z >= BOUNDS.z0 && z <= BOUNDS.z1; }
+const BOUNDS = { x0: 0, x1: scenarioName === "far" ? 140 : 70, y0: 40, y1: 100, z0: 0, z1: 70 };
+// "far": only X/Z within the render distance is loaded (full height), like the real client
+const RD = scenarioName === "far" ? 32 : Infinity;
+function loaded(x, y, z) { return Math.abs(x - P.x) <= RD && Math.abs(z - P.z) <= RD && x >= BOUNDS.x0 && x <= BOUNDS.x1 && y >= BOUNDS.y0 && y <= BOUNDS.y1 && z >= BOUNDS.z0 && z <= BOUNDS.z1; }
 function get(x, y, z) {
   x = Math.floor(x); y = Math.floor(y); z = Math.floor(z);
   if (!loaded(x, y, z)) return null;
@@ -30,7 +32,7 @@ function fillBox(x0, y0, z0, x1, y1, z1, id) {
 }
 
 // cavern: floor at y<=59, air 60..75
-fillBox(10, 60, 10, 50, 75, 50, "minecraft:air");
+if (scenarioName !== "far") fillBox(10, 60, 10, 50, 75, 50, "minecraft:air");
 let warps;
 let startPos = { x: 12.5, y: 60, z: 12.5 };
 const lobbyState = { location: "CRYSTAL_HOLLOWS", id: "m12AB", lobbies: 0, fixOn: false };
@@ -48,6 +50,17 @@ if (scenarioName === "basic" || scenarioName === "gem") {
   }
 } else if (scenarioName === "lobby" || scenarioName === "fix") {
   warps = [{ number: 1, x: 20, y: 60, z: 20 }, { number: 2, x: 30, y: 60, z: 30 }];
+} else if (scenarioName === "far") {
+  // start cavern A, a pocket 32 blocks east that the planner can only reach through a winding corridor
+  // (north, east, south: starts by walking away), and the route in a lower cavern B far to the east.
+  fillBox(10, 60, 10, 30, 66, 30, "minecraft:air");
+  fillBox(19, 60, 3, 21, 61, 9, "minecraft:air");     // corridor north out of A
+  fillBox(19, 60, 3, 48, 61, 4, "minecraft:air");     // east
+  fillBox(46, 60, 3, 48, 61, 14, "minecraft:air");    // south
+  fillBox(44, 60, 14, 50, 61, 18, "minecraft:air");   // pocket
+  fillBox(95, 56, 10, 125, 64, 40, "minecraft:air");  // cavern B, floor at 55
+  startPos = { x: 25.5, y: 60, z: 16.5 };
+  warps = [{ number: 1, x: 100, y: 56, z: 16 }, { number: 2, x: 112, y: 56, z: 30 }];
 } else if (scenarioName === "tunnel") {
   // start in a separate pocket: must dig to reach the cavern
   fillBox(56, 60, 20, 60, 62, 24, "minecraft:air");
@@ -93,7 +106,8 @@ let navFailed = false;
 let breaking = { key: null, ticks: 0 };
 const pendingBombs = [];
 const log = [];
-let stats = { mined: 0, placed: 0, bombs: 0, cmds: [] };
+let stats = { mined: 0, placed: 0, bombs: 0, cmds: [], diagDownSteps: 0, inspectVerticalSteps: 0, inspectMinZ: 999 };
+const seenSteps = new Set();
 
 function standableFeet(x, y, z) { return solid(x, y - 1, z) && passable(x, y, z) && passable(x, y + 1, z); }
 function bfsPath(fromFeet, toFeet) {
@@ -138,7 +152,7 @@ function eyeOn(w) { return { x: w.x + 0.5, y: w.y + 1 + 1.54, z: w.z + 0.5 }; }
 function routeStatus() {
   const ws = warps.map((w, i) => {
     const nx = warps[(i + 1) % warps.length];
-    const checked = Math.hypot(P.x - w.x, P.z - w.z) < 80;
+    const checked = Math.hypot(P.x - w.x, P.z - w.z) < Math.min(80, RD);
     const problems = [];
     if (!checked) problems.push("notLoaded");
     else {
@@ -266,6 +280,7 @@ const api = {
     itemByName: (n) => hotbar.findIndex((h) => h && h.toLowerCase().includes(n.toLowerCase()) && (inv[h] === undefined || inv[h] > 0)),
     itemCount: (n) => inv[n] || 0, etherwarpSlot: () => -1, aoteSlot: () => -1, isGuiOpen: () => false,
     mouseOverBlock: () => { const h = mouseOver(); return h ? h.block : null; },
+    leftClick: () => { P.keys.click = true; return true; },
     rightClick: () => {
       const h = mouseOver();
       if (hotbar[P.held] === "Cobblestone" && h && inv.Cobblestone > 0) {
@@ -329,7 +344,8 @@ function physics() {
     while (P.y > BOUNDS.y0 && passable(P.x, P.y - 1, P.z)) P.y -= 1;
   }
   // mining
-  if (P.keys.attack && P.held === 0) {
+  if ((P.keys.attack || P.keys.click) && P.held === 0) {
+    P.keys.click = false;
     const h = mouseOver();
     if (h) {
       const k = K(h.block.x, h.block.y, h.block.z);
@@ -383,6 +399,16 @@ for (; t < MAX && running; t++) {
   const fn = handle.states[state];
   if (fn) fn();
   physics();
+  if (DEBUG.ctx) {
+    const st0 = DEBUG.ctx.mover.digger.step;
+    if (st0 && st0.from && !seenSteps.has(st0)) {
+      seenSteps.add(st0);
+      const horiz = st0.feet.x !== st0.from.x || st0.feet.z !== st0.from.z;
+      if (st0.feet.y < st0.from.y && horiz && !st0.drop) stats.diagDownSteps++;
+      if (state === "GRS_INSPECT" && st0.feet.y !== st0.from.y) stats.inspectVerticalSteps++;
+    }
+    if (state === "GRS_INSPECT") stats.inspectMinZ = Math.min(stats.inspectMinZ, Math.floor(P.z));
+  }
   if (process.env.TRACE && t % Number(process.env.TRACE) === 0 && DEBUG.ctx) {
     const mv = DEBUG.ctx.mover, b = DEBUG.ctx.builder;
     console.log("T" + t, state, "P", P.x.toFixed(2), P.y.toFixed(2), P.z.toFixed(2), "mode", mv.mode, "cand", mv.cand && JSON.stringify(mv.cand),
