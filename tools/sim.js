@@ -325,7 +325,7 @@ const api = {
     yaw: () => (P.look ? Math.atan2(-P.look.x, P.look.z) * 180 / Math.PI : 0),
     pitch: () => (P.look ? -Math.asin(P.look.y) * 180 / Math.PI : 0),
     motionX: () => P.mx || 0, motionZ: () => P.mz || 0, blockPos: feetBlock, x: () => P.x, y: () => P.y, z: () => P.z,
-    onGround: () => !(P.jumpT > 0), jump: () => { if (!(P.jumpT > 0)) P.jumpT = 8; }, setKey: (k, v) => { P.keys[k] = v; }, releaseKeys: () => { P.keys = {}; }, resetWASD: () => { P.walkTo = null; },
+    onGround: () => !(P.jumpT > 0), jump: () => { stats.scriptedJumps = (stats.scriptedJumps || 0) + 1; if (!(P.jumpT > 0)) P.jumpT = 8; }, setKey: (k, v) => { P.keys[k] = v; if (k === "jump" && v && !(P.jumpT > 0)) { P.jumpT = 8; stats.jumps = (stats.jumps || 0) + 1; } }, releaseKeys: () => { P.keys = {}; }, resetWASD: () => { P.walkTo = null; },
     setSneaking: (v) => { P.sneak = v; }, stopAllMovement: () => { P.keys = {}; walk = null; },
     heldItemSlot: () => P.held, setHeldItemSlot: (s) => { P.held = s; return true; },
     itemByName: (n) => hotbar.findIndex((h) => h && h.toLowerCase().includes(n.toLowerCase()) && (inv[h] === undefined || inv[h] > 0)),
@@ -339,6 +339,7 @@ const api = {
         const f = feetBlock();
         if (isAir(get(c.x, c.y, c.z) || "x") && !(c.x === f.x && c.z === f.z && (c.y === f.y || c.y === f.y + 1))) {
           set(c.x, c.y, c.z, "minecraft:cobblestone"); inv.Cobblestone--; stats.placed++;
+          if (process.env.PLACELOG) console.log("PLACE", c.x, c.y, c.z, "P", P.x.toFixed(2), P.y.toFixed(2), P.z.toFixed(2));
           if (state === "GRS_INSPECT") stats.placedDuringInspect++;
         }
       } else if (hotbar[P.held] === "Bob-omb" && inv["Bob-omb"] > 0) {
@@ -481,6 +482,10 @@ for (; t < MAX && running; t++) {
     }
     if (st0 && st0.vertical && st0.phase === "clear" && (P.walkTo || walk || P.speed > 0.001)) stats.movedWhileMiningDown++;
     if (state === "GRS_INSPECT") stats.inspectMinZ = Math.min(stats.inspectMinZ, Math.floor(P.z));
+  }
+  if (process.env.PTRACE && DEBUG.ctx && DEBUG.ctx.placer.cur && /pillar/.test(DEBUG.ctx.placer.cur.key)) {
+    const pc = DEBUG.ctx.placer.cur;
+    console.log("PT" + t, pc.key, pc.phase, "P", P.x.toFixed(2), P.y.toFixed(2), P.z.toFixed(2), "jumpT", P.jumpT || 0, "keys", JSON.stringify(P.keys), "over", JSON.stringify(mouseOver() && mouseOver().block));
   }
   if (process.env.TRACE && t % Number(process.env.TRACE) === 0 && DEBUG.ctx) {
     const mv = DEBUG.ctx.mover, b = DEBUG.ctx.builder;

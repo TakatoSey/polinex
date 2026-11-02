@@ -20,6 +20,7 @@ const { Items } = require("./items.js");
 const { Mover } = require("./mover.js");
 const { Builder } = require("./builder.js");
 const { Lobby, currentLobbyId } = require("./lobby.js");
+const { Input } = require("./input.js");
 
 const NAME = "Gemstone Route Setup";
 
@@ -78,6 +79,7 @@ ctx.setIssue = (msg) => {
 if (typeof __GRS_DEBUG__ !== "undefined") __GRS_DEBUG__.ctx = ctx;
 
 ctx.blocks = new Blocks(ctx);
+ctx.input = new Input(ctx);
 ctx.items = new Items(ctx);
 ctx.miner = new Miner(ctx);
 ctx.placer = new Placer(ctx);
@@ -135,7 +137,7 @@ function releaseAll() {
   try { mining.clearFakeLook(); } catch (e) { /* idle */ }
   player.releaseKeys();
   player.resetWASD();
-  player.setSneaking(false);
+  ctx.input.release();
 }
 
 function fail(reason) {
@@ -230,6 +232,7 @@ m.onDeath(() => { releaseAll(); setStage("GRS_WAIT_WORLD"); });
 // Failsafe/break pause: the engine stops ticking states, so make sure nothing stays held.
 on("tick", () => {
   if (logDirty && U.now() - logSavedAt > 5000) flushLog();
+  ctx.input.tick();
   ctx.mover.digger.watchdog();
   ctx.miner.watchdog();
   const a = macro.active();

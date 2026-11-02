@@ -258,7 +258,7 @@ Builder.prototype.cleanupSupport = function (w, p, st) {
     if (!ci.loaded || !B.isCobble(ci.id) || keep(cell)) continue;
     B.ourCobble.add(U.key(cell)); // chain cells were air when planned: cobble there is ours
     ctx.detail = "Removing support block " + U.fmt(cell) + " of #" + w.number;
-    const r = this.action("mine", cell);
+    const r = this.action("mine", cell, null, { allowOurCobble: true });
     if (r.s === "fail") { ctx.warn("Could not remove support block " + U.fmt(cell) + ": " + r.reason); p.chain.splice(i, 1); return { s: "busy" }; }
     if (r.s === "done") { B.ourCobble.delete(U.key(cell)); ctx.log("Removed support block " + U.fmt(cell) + " of #" + w.number); }
     return { s: "busy" };
@@ -414,7 +414,13 @@ Builder.prototype.clearLine = function (w, next) {
   this.lineWaitStart = 0;
   const target = obs[0];
   const tk = U.key(target);
-  const why = B.mineBlockReason(target, { allowGem: allowGem });
+  // our own support block in the line may go, a waypoint block (or the block under one) never
+  const isWaypointBlock = (ctx.lastStatus ? ctx.lastStatus.warps : []).some((x) => {
+    const c = this.cobPos(x);
+    return c.x === target.x && c.z === target.z && (target.y === c.y || target.y === c.y - 1);
+  });
+  const lineOpts = { allowGem: allowGem, allowOurCobble: !isWaypointBlock };
+  const why = B.mineBlockReason(target, lineOpts);
   if (why) return { s: "fail", fatal: true, reason: label + " blocked by " + why };
   if (this.unreachable.has(tk)) {
     return { s: "fail", fatal: true, reason: label + ": cannot reach the obstruction " + U.fmt(target) + " (" + this.unreachable.get(tk) +
@@ -441,6 +447,7 @@ Builder.prototype.clearLine = function (w, next) {
   const hold = new Set(obs.slice(0, 6).map(U.key)); // the held button may run on into the next line blocks
   const r = this.action("mine", target, this.linePoint(eyeA, topB, target), {
     allowGem: allowGem,
+    allowOurCobble: lineOpts.allowOurCobble,
     hold: hold,
     tunnel: true, // reach it by tunnelling toward it, not by searching stand spots all over the cave
     fallbackBomb: ctx.cfg.useBombs() && ctx.cfg.bombLines() && !this.bombTried.has(tk),
@@ -547,6 +554,12 @@ Builder.prototype.action = function (kind, cell, aim, opts) {
   }
 
   // Pillar placement (columns / blocks on a floor): stand in the cell, jump, place under ourselves.
+  if (kind === "place" && ctx.blocks.isCobble(ctx.blocks.info(c).id)) { // already there: done, never walk back into it
+    ctx.blocks.ourCobble.add(U.key(c));
+    this.act = null;
+    this.lastChangeAt = U.now();
+    return { s: "done" };
+  }
   if (kind === "place" && a.pillar) {
     if (player.onGround() && !U.same(player.blockPos(), c)) {
       if (++a.pmoves > 3) { a.pillar = false; return { s: "busy" }; }

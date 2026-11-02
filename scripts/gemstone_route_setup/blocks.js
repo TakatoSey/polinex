@@ -78,6 +78,9 @@ Blocks.prototype.mineBlockReason = function (p, opts) {
   if (bl) return "blacklisted: " + bl;
   if (i.gem && !(opts && opts.allowGem)) return "protected gemstone " + id;
   if (this.isCobble(id) && !this.ourCobble.has(U.key(p))) return "foreign cobblestone (someone's route)";
+  // our own placed blocks (waypoints, blocks under them, support) are never mined by movement/tunnelling;
+  // only the support cleanup and line clearing remove them, explicitly
+  if (this.isCobble(id) && !(opts && opts.allowOurCobble)) return "our placed cobblestone";
   if (this.inCore(p)) return "inside a structure core";
   if (this.isCobble(id)) return null;
   this.compilePatterns();

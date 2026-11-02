@@ -10,7 +10,7 @@ function Placer(ctx) {
 }
 
 Placer.prototype.release = function () {
-  if (this.cur && this.cur.sneaking) player.setSneaking(false);
+  if (this.cur && this.cur.sneaking) this.ctx.input.sneak(false);
   try { rotation.generalStopRotation(); } catch (e) { /* idle */ }
   this.cur = null;
 };
@@ -68,7 +68,7 @@ Placer.prototype.tick = function (cell) {
     if (!player.setHeldItemSlot(r.slot)) return { s: "busy" };
     c.face = this.faceFor(c0, world.eyePos());
     if (!c.face) return this.fail("no visible support face for " + U.fmt(c0) + " from here", true);
-    player.setSneaking(true); // never open a GUI by clicking an interactable block
+    this.ctx.input.sneak(true); // never open a GUI by clicking an interactable block
     c.sneaking = true;
     rotation.generalRotateToVec(c.face.aim.x, c.face.aim.y, c.face.aim.z);
     c.phase = "aim";
@@ -135,7 +135,10 @@ Placer.prototype.pillarTick = function (cell) {
     if (r.s === "busy") return r;
     if (r.s === "fail") return this.fail(r.reason);
     if (!player.setHeldItemSlot(r.slot)) return { s: "busy" };
-    const pa = U.steadyAim(U.v(c0.x + 0.5, c0.y - 0.02, c0.z + 0.5)); // top face of the block we stand on, slightly ahead
+    // top face of the block we stand on, almost straight down: the look angle stays fixed while we rise, so the
+    // offset grows with the jump height (jump boost ~2.4 blocks). 0.12 still lands on the block at that apex,
+    // and is enough to keep the yaw defined (no spinning).
+    const pa = U.steadyAim(U.v(c0.x + 0.5, c0.y - 0.02, c0.z + 0.5), 0.12);
     rotation.generalRotateToVec(pa.x, pa.y, pa.z);
     c.phase = "aim";
     c.at = U.now();
@@ -143,19 +146,34 @@ Placer.prototype.pillarTick = function (cell) {
   }
   if (c.phase === "aim") {
     if (!rotation.generalIsDone() && U.now() - c.at < 1500) return { s: "busy" };
-    if (!player.onGround()) return { s: "busy" };
+    // be exactly on the centre before jumping, so we land back on top of the new block (jump boost jumps higher)
+    const cc = U.v(c0.x + 0.5, c0.y, c0.z + 0.5);
+    if (player.onGround() && U.distFlat(player.pos(), cc) > 0.15) {
+      ctx.input.sneak(true);
+      player.setOptimalKeysTo(cc.x, cc.y, cc.z, true);
+      if (U.now() - c.at > 4000) return this.fail("could not centre on " + U.fmt(c0) + " for pillar placement", true);
+      return { s: "busy" };
+    }
+    if (!player.onGround() || player.speed() > 0.01) { player.resetWASD(); return { s: "busy" }; } // stand still first
     player.resetWASD();
-    player.jump();
+    ctx.input.jump(); // a real jump key press, like the space bar
     c.phase = "rise";
     c.at = U.now();
+    c.lastY = player.y();
+    c.rising = false;
     return { s: "busy" };
   }
   if (c.phase === "rise") {
-    // Click only when the whole hitbox is above the cell (feet >= top + 0.1), we are still airborne, and the
-    // crosshair is on the block we stand on. Clicking at the moment of the jump is rejected by the server.
+    // Click at the TOP of the jump: the server sees us slightly behind the client (ping). Placing while it still
+    // thinks we are inside the cell gets the block rejected, we land on a ghost block and get lagged back.
+    // So: airborne, feet clearly above the cell, no longer rising (apex), crosshair on the block we stood on.
     const over = player.mouseOverBlock();
     const onBase = !!over && U.same(U.floor(over), U.up(c0, -1));
-    if (U.now() - c.at >= 100 && !player.onGround() && player.y() >= c0.y + 1.1 && onBase) {
+    const y = player.y();
+    if (y > c.lastY + 0.001) c.rising = true;
+    const atApex = c.rising && y <= c.lastY + 0.001;
+    c.lastY = y;
+    if (!player.onGround() && atApex && y >= c0.y + 1.15 && onBase) {
       player.rightClick();
       c.phase = "verify";
       c.at = U.now();

@@ -24,7 +24,7 @@ Digger.prototype.release = function () {
   this.ctx.miner.release();
   this.ctx.placer.release();
   player.resetWASD();
-  if (this.sneaking) { player.setSneaking(false); this.sneaking = false; }
+  if (this.sneaking) { this.ctx.input.sneak(false); this.sneaking = false; }
   this.lookKey = null;
   this.step = null;
 };
@@ -56,7 +56,7 @@ Digger.prototype.driveTick = function (s) {
   }
   if (!rotation.miningIsDone() && rotation.miningIsRotating() && U.now() - this.lookAt < 1500) return { s: "busy" };
 
-  if (!this.sneaking) { player.setSneaking(true); this.sneaking = true; }
+  if (!this.sneaking) { this.ctx.input.sneak(true); this.sneaking = true; }
   const solid = s.clear.filter((c) => !ctx.blocks.info(c).passable);
   if (!solid.length) {
     if (s.vertical) ctx.miner.release(); else ctx.miner.guard(s.holdNext);
@@ -288,7 +288,7 @@ Digger.prototype.tick = function (targetFeet, arrive, flat) {
     const c = U.v(s.from.x + 0.5, s.from.y, s.from.z + 0.5);
     const off = U.distFlat(player.pos(), c);
     if (off > 0.15) {
-      if (!this.sneaking) { player.setSneaking(true); this.sneaking = true; } // slow, precise steps, no edge slips
+      if (!this.sneaking) { this.ctx.input.sneak(true); this.sneaking = true; } // slow, precise steps, no edge slips
       player.setOptimalKeysTo(c.x, c.y, c.z, true);
       if (U.now() - s.started > 4000) return this.badStep("could not centre for digging down");
       return { s: "busy" };
@@ -378,10 +378,11 @@ Digger.prototype.tick = function (targetFeet, arrive, flat) {
     if (!s.aheadLeft) ctx.miner.press(false);
     else ctx.miner.guard(s.holdNext); // keep mining the next tunnel block while stepping forward, never anything else
     // crouch-walk (cannot slide off an edge), except when this step is a deliberate drop
-    if (s.drop && this.sneaking) { player.setSneaking(false); this.sneaking = false; }
-    else if (!s.drop && !s.up && !this.sneaking) { player.setSneaking(true); this.sneaking = true; }
+    if (s.drop && this.sneaking) { this.ctx.input.sneak(false); this.sneaking = false; }
+    else if (!s.drop && !s.up && !this.sneaking) { this.ctx.input.sneak(true); this.sneaking = true; }
     player.setOptimalKeysTo(goal.x, goal.y, goal.z, true);
-    if (s.up && player.onGround() && U.distFlat(player.pos(), goal) < 1.3) player.jump();
+    // step up: one real jump-key press from the ground when we touch the step (never a scripted jump)
+    if (s.up && player.onGround() && U.distFlat(player.pos(), goal) < 1.3) ctx.input.jump();
     if (U.now() - s.walkStart > 6000) return this.badStep("could not step into " + U.fmt(s.feet));
     return { s: "busy" };
   }
