@@ -150,13 +150,18 @@ Placer.prototype.pillarTick = function (cell) {
     return { s: "busy" };
   }
   if (c.phase === "rise") {
-    if (player.y() >= c0.y + 0.98) {
+    // Click only when the whole hitbox is above the cell (feet >= top + 0.1), we are still airborne, and the
+    // crosshair is on the block we stand on. Clicking at the moment of the jump is rejected by the server.
+    const over = player.mouseOverBlock();
+    const onBase = !!over && U.same(U.floor(over), U.up(c0, -1));
+    if (U.now() - c.at >= 100 && !player.onGround() && player.y() >= c0.y + 1.1 && onBase) {
       player.rightClick();
       c.phase = "verify";
       c.at = U.now();
       return { s: "busy" };
     }
-    if (U.now() - c.at > 900) {
+    if (U.now() - c.at > 300 && player.onGround()) { c.phase = "prep"; if (++c.tries > 3) return this.fail("pillar jump at " + U.fmt(c0) + " never got high enough"); return { s: "busy" }; }
+    if (U.now() - c.at > 1200) {
       if (++c.tries > 3) return this.fail("pillar jump at " + U.fmt(c0) + " never got high enough");
       c.phase = "prep";
     }

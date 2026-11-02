@@ -35,6 +35,7 @@ Bomber.prototype.tick = function (target) {
     const eye = world.eyePos();
     const d = U.dist(eye, t);
     if (d > 10) return this.fail("too far to throw accurately (" + d.toFixed(1) + " blocks)", true);
+    c.solidBefore = this.solidAround(t);
     const hit = world.raytraceFrom(eye, t);
     if (hit.type !== "MISS" && U.dist(U.v(hit.x, hit.y, hit.z), t) > 1.5) return this.fail("no line of sight to the bomb target", true);
     if (!player.setHeldItemSlot(r.slot)) return { s: "busy" };
@@ -62,11 +63,27 @@ Bomber.prototype.tick = function (target) {
       return { s: "busy" };
     }
     if (U.now() - c.thrownAt < ctx.cfg.bombFuseMs()) return { s: "busy" };
+    // check it really went off: some blocks around the waypoint must be gone
+    if (this.solidAround(t) >= c.solidBefore && c.solidBefore > 0) {
+      if (!c.waitedExtra) { c.waitedExtra = true; c.thrownAt = U.now() - ctx.cfg.bombFuseMs() + 1500; return { s: "busy" }; }
+      return this.fail("Bob-omb did not explode here (no-bomb area or it flew past the waypoint)");
+    }
     this.release();
     ctx.progress();
     return { s: "done" };
   }
   return { s: "busy" };
+};
+
+Bomber.prototype.solidAround = function (t) {
+  const B = this.ctx.blocks;
+  const c = U.floor(t);
+  let n = 0;
+  for (let dx = -2; dx <= 2; dx++) for (let dy = -2; dy <= 2; dy++) for (let dz = -2; dz <= 2; dz++) {
+    const i = B.info(U.v(c.x + dx, c.y + dy, c.z + dz));
+    if (i.loaded && i.solid) n++;
+  }
+  return n;
 };
 
 Bomber.prototype.fail = function (reason, needStand) {

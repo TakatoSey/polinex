@@ -184,12 +184,17 @@ Mover.prototype.candidates = function () {
   return this.cands;
 };
 
+// Etherwarp is NOT a way of walking around: only for a one-off long trip or a big climb, only on goals that
+// opt in (allowEther === true: long travel, never building/inspection moves), one warp (no chains), with a cooldown.
 Mover.prototype.wantsEther = function (support) {
   const g = this.goal;
-  if (g.allowEther === false || g.flat) return false; // inspection never needs to climb
+  const cfg = this.ctx.cfg;
+  if (g.allowEther !== true || g.flat) return false;
   if (this.etherFailed.has(U.key(support))) return false;
+  if (U.now() - (this.ctx.lastEtherAt || 0) < cfg.etherCooldownSec() * 1000) return false;
   const rise = support.y + 1 - player.y();
-  if (rise < this.ctx.cfg.etherMinRise()) return false;
+  const far = U.dist(player.pos(), U.top(support));
+  if (rise < cfg.etherMinRise() && far < cfg.etherMinDist()) return false;
   if (!skyblock.hasEtherwarp()) return false;
   try { return etherwarp.canReach(support.x, support.y, support.z); } catch (e) { return false; }
 };
@@ -358,8 +363,7 @@ Mover.prototype.tick = function () {
     case "decide": return this.tickDecide();
     case "plan": return this.tickPlan();
     case "walk": return this.tickWalk();
-    case "ether": return this.tickEther(false);
-    case "etherpath": return this.tickEther(true);
+    case "ether": return this.tickEther();
     case "dig": return this.tickDig();
     case "aotv": return this.tickAotv();
     case "settle": return this.tickSettle();
@@ -443,11 +447,8 @@ Mover.prototype.tickPlan = function () {
       return { s: "busy" };
     }
   }
-  // no walking path
-  if (rise >= ctx.cfg.etherMinRise() && skyblock.hasEtherwarp() && g.allowEther !== false && !this.etherFailed.has(U.key(c))) {
-    this.mode = "etherpath";
-    return { s: "busy" };
-  }
+  // no walking path: a single Etherwarp if this goal allows it (never a chain of warps), else mine there
+  if (this.wantsEther(c)) { this.mode = "ether"; return { s: "busy" }; }
   const digEst = this.digCost(player.blockPos(), feetC);
   if (digEst < Infinity) {
     this.digTarget = feetC;
@@ -570,13 +571,13 @@ Mover.prototype.tickAotv = function () {
   return { s: "busy" };
 };
 
-Mover.prototype.tickEther = function (pathfind) {
+Mover.prototype.tickEther = function () {
   const ctx = this.ctx;
   const c = this.cand;
   let done = false;
-  const opts = { budgetMs: ctx.cfg.planBudget() };
   try {
-    done = pathfind ? etherwarp.pathfindTo(c.x, c.y, c.z, opts) : etherwarp.etherwarpTo(c.x, c.y, c.z, opts);
+    // directTo = exactly one warp, no route fallback (etherwarpTo/pathfindTo may chain several warps)
+    done = etherwarp.directTo(c.x, c.y, c.z);
   } catch (e) {
     ctx.warn("Etherwarp call rejected: " + e);
     done = false;
@@ -587,6 +588,8 @@ Mover.prototype.tickEther = function (pathfind) {
   }
   if (done) {
     etherwarp.stop();
+    ctx.lastEtherAt = U.now();
+    ctx.log("Etherwarped to " + U.fmt(c));
     ctx.progress();
     if (this.arrived()) { this.mode = "done"; return { s: "arrived" }; }
     this.mode = "decide";

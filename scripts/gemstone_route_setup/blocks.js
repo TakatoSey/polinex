@@ -130,7 +130,8 @@ Blocks.prototype.noBombZone = function (p) {
 
 // Feet positions near `target` from which a ray from the eye reaches `aimPoint` (or the block itself).
 // Small, bounded search; results sorted by distance from the player.
-Blocks.prototype.standSpotsFor = function (target, aimPoint, reach, maxResults) {
+// pred(eye, feet) optionally replaces the line-of-sight test (e.g. "a support face is clickable from here").
+Blocks.prototype.standSpotsFor = function (target, aimPoint, reach, maxResults, pred) {
   const out = [];
   const t = U.floor(target);
   const me = player.pos();
@@ -149,10 +150,13 @@ Blocks.prototype.standSpotsFor = function (target, aimPoint, reach, maxResults) 
   }
   out.sort((a, b) => a.d - b.d);
   const res = [];
-  for (let k = 0; k < out.length && res.length < (maxResults || 4); k++) {
-    const hit = world.raytraceFrom(out[k].eye, aimPoint);
-    const ok = hit.type === "MISS" || (hit.block && U.same(U.floor(hit.block), t)) ||
-      U.dist(U.v(hit.x, hit.y, hit.z), aimPoint) < 0.15;
+  for (let k = 0; k < out.length && k < 60 && res.length < (maxResults || 4); k++) {
+    let ok;
+    if (pred) ok = pred(out[k].eye, out[k].feet);
+    else {
+      const hit = world.raytraceFrom(out[k].eye, aimPoint);
+      ok = hit.type === "MISS" || (hit.block && U.same(U.floor(hit.block), t)) || U.dist(U.v(hit.x, hit.y, hit.z), aimPoint) < 0.15;
+    }
     if (ok) res.push(out[k].feet);
   }
   return res;

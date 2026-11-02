@@ -75,10 +75,16 @@ Miner.prototype.aimPoint = function (b, opts, eye) {
     const d = U.DIRS6[k];
     const rel = (eye.x - c.x) * d.x + (eye.y - c.y) * d.y + (eye.z - c.z) * d.z;
     if (rel <= 0.5) continue; // we are not on the outside of this face
-    const p = U.add(c, U.scale(d, 0.49));
-    if (!hits(p)) continue;
-    const turn = rotation.distanceTo(p.x, p.y, p.z);
-    if (!best || turn < best.turn) best = { p: p, turn: turn };
+    // a few points on this face: the one closest to where we already look wins (smallest camera move)
+    const fc = U.add(c, U.scale(d, 0.49));
+    const ax1 = d.x ? U.v(0, 1, 0) : U.v(1, 0, 0), ax2 = d.z ? U.v(0, 1, 0) : U.v(0, 0, 1);
+    const offs = [[0, 0], [0.3, 0], [-0.3, 0], [0, 0.3], [0, -0.3]];
+    for (let j = 0; j < offs.length; j++) {
+      const p = U.add(fc, U.add(U.scale(ax1, offs[j][0]), U.scale(ax2, offs[j][1])));
+      if (!hits(p)) continue;
+      const turn = rotation.distanceTo(p.x, p.y, p.z);
+      if (!best || turn < best.turn) best = { p: p, turn: turn };
+    }
   }
   if (best) return best.p;
   const vp = mining.visiblePoint(b);

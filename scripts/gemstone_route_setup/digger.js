@@ -4,7 +4,7 @@
 // like the powder mining module, and the camera only moves between two fixed points per step
 // (head block face, then feet block top), with a fixed yaw along the tunnel.
 // Never digs through gemstones, liquids, unknown terrain, structure cores or blacklisted blocks.
-// Bridges a missing floor block with cobblestone when it can.
+// It never places blocks (no bridging while tunnelling): a missing floor is either a safe drop or a blocked direction.
 // tick(targetFeet, arrive) -> { s: "busy" } | { s: "arrived" } | { s: "fail", reason }
 
 const U = require("./util.js");
@@ -91,8 +91,12 @@ Digger.prototype.planStep = function (feet, t, flat) {
       const safeFall = sup.loaded && (sup.solid || this.landingDepth(support, this.ctx.cfg.maxDrop()) > 0);
       // straight down: centre on the block, stand completely still while mining, then just fall
       if (!why && safeFall) {
+        // aim at the floor slightly IN FRONT of us along the current facing (~80 degrees down): looking exactly
+        // straight down makes the yaw undefined and the camera spins around
+        const yaw = player.yaw() * Math.PI / 180;
+        const fx = -Math.sin(yaw) * 0.3, fz = Math.cos(yaw) * 0.3;
         return { clear: [below], place: [], feet: below, up: false, vertical: true, badKey: "v" + U.key(feet),
-          aims: [U.v(below.x + 0.5, below.y + 0.99, below.z + 0.5)], hold: new Set([U.key(below)]), holdNext: null };
+          aims: [U.v(below.x + 0.5 + fx, below.y + 0.99, below.z + 0.5 + fz)], hold: new Set([U.key(below)]), holdNext: null };
       }
       return { fail: why || "no known ground within " + this.ctx.cfg.maxDrop() + " blocks below " + U.fmt(below) };
     }
@@ -115,7 +119,7 @@ Digger.prototype.planStep = function (feet, t, flat) {
     if (dy >= 1) {
       const above = U.up(feet, 2);
       step = { clear: [above, U.up(n, 2), U.up(n, 1)], feet: U.up(n, 1), supportCell: n, up: true,
-        aims: [U.v(above.x + 0.5, above.y + 0.01, above.z + 0.5), face(U.up(n, 2)), face(U.up(n, 1))] };
+        aims: [U.v(above.x + 0.5 + h.x * 0.3, above.y + 0.01, above.z + 0.5 + h.z * 0.3), face(U.up(n, 2)), face(U.up(n, 1))] };
     } else { // level (also while the target is lower: descend later with a vertical shaft)
       // head block at its LOWER part, then the feet block at its top: both ~32-36 degrees down, so the camera
       // hardly moves, and once the head breaks the same crosshair runs straight into the feet block
@@ -148,10 +152,9 @@ Digger.prototype.planStep = function (feet, t, flat) {
     if (!sup.loaded) { reasons.push("unknown floor at " + U.fmt(step.supportCell)); this.badSteps.add(bad); continue; }
     if (sup.liquid) { reasons.push("liquid floor at " + U.fmt(step.supportCell)); this.badSteps.add(bad); continue; }
     if (!sup.solid) {
-      if (!sup.passable) { reasons.push("odd floor at " + U.fmt(step.supportCell)); this.badSteps.add(bad); continue; }
-      // a short drop onto known solid ground is fine; otherwise bridge the gap with cobble
-      if (!step.up && this.landingDepth(step.supportCell, this.ctx.cfg.maxDrop()) > 0) step.drop = true;
-      else step.place.push(step.supportCell);
+      // a drop onto known solid ground is fine; otherwise this direction is blocked (no bridging with blocks)
+      if (sup.passable && !step.up && this.landingDepth(step.supportCell, this.ctx.cfg.maxDrop()) > 0) step.drop = true;
+      else { reasons.push("no floor at " + U.fmt(step.supportCell)); this.badSteps.add(bad); continue; }
     }
     return step;
   }
@@ -174,6 +177,9 @@ Digger.prototype.tick = function (targetFeet, arrive, flat) {
   if (this.dug > ctx.cfg.maxDigLen()) return this.fail("dug " + this.dug + " blocks without arriving (Max Dig Length)");
 
   if (!this.step) {
+    // only plan from the ground: mid-jump (jump boost / god potion) the feet position is in the air and every
+    // step would look like it has no floor
+    if (!player.onGround()) { player.resetWASD(); return { s: "busy" }; }
     const st = this.planStep(feet, t, flat);
     if (st.arrived) { this.release(); return { s: "arrived" }; }
     if (st.fail) return this.fail(st.fail);

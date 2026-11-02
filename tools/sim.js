@@ -72,6 +72,17 @@ if (scenarioName === "basic" || scenarioName === "gem") {
   fillBox(60, 60, 60, 63, 61, 63, "minecraft:air");
   startPos = { x: 61.5, y: 60, z: 61.5 };
   warps = [{ number: 1, x: 40, y: 60, z: 40 }, { number: 2, x: 30, y: 60, z: 30 }];
+} else if (scenarioName === "gemspot") {
+  // waypoints sit inside gemstones (waypoint block + both landing blocks), with a vein next to them
+  warps = [{ number: 1, x: 20, y: 60, z: 20 }, { number: 2, x: 30, y: 60, z: 34 }];
+  warps.forEach((w) => {
+    for (let dy = 0; dy <= 2; dy++) set(w.x, w.y + dy, w.z, "minecraft:purple_stained_glass");
+    set(w.x + 1, w.y, w.z, "minecraft:purple_stained_glass_pane"); // vein beside the waypoint: must stay
+  });
+} else if (scenarioName === "bridge") {
+  // waypoint floating 3 above the floor but right next to a wall: support goes sideways and must be removed
+  fillBox(42, 60, 18, 50, 75, 26, "minecraft:stone");  // wall block of stone
+  warps = [{ number: 1, x: 39, y: 64, z: 22 }, { number: 2, x: 20, y: 60, z: 20 }];
 } else if (scenarioName === "tunnel") {
   // start in a separate pocket: must dig to reach the cavern
   fillBox(56, 60, 20, 60, 62, 24, "minecraft:air");
@@ -117,7 +128,7 @@ let navFailed = false;
 let breaking = { key: null, ticks: 0 };
 const pendingBombs = [];
 const log = [];
-let stats = { mined: 0, placed: 0, bombs: 0, cmds: [], diagDownSteps: 0, inspectVerticalSteps: 0, inspectMinZ: 999, shaftSteps: 0, movedWhileMiningDown: 0, axisChanges: 0, attackPresses: 0, clicks: 0, floorMined: 0, turnDeg: 0 };
+let stats = { mined: 0, placed: 0, bombs: 0, cmds: [], diagDownSteps: 0, inspectVerticalSteps: 0, inspectMinZ: 999, shaftSteps: 0, movedWhileMiningDown: 0, axisChanges: 0, attackPresses: 0, clicks: 0, floorMined: 0, turnDeg: 0, etherwarps: 0, placedDuringInspect: 0, gemsLeftNearRoute: 0 };
 let lastAxis = null, lastAttack = false;
 const hist = [];
 const seenSteps = new Set();
@@ -261,7 +272,8 @@ const api = {
     pathFindRotateToVec: (x, y, z) => lookAt(x, y, z), pathFindIsDone: () => true, pathFindStopRotation() {},
     etherwarpStopRotation() {}, distanceTo: () => 10,
   },
-  etherwarp: { canReach: () => false, stop() {}, failed: () => false, etherwarpTo: () => false, pathfindTo: () => false },
+  etherwarp: { canReach: () => false, stop() {}, failed: () => false, directTo: () => { stats.etherwarps++; return false; },
+    etherwarpTo: () => { stats.etherwarps++; return false; }, pathfindTo: () => { stats.etherwarps++; return false; } },
   nav: {
     findPathAsync: (from, target) => {
       const f = from ? { x: from.x, y: from.y + 1, z: from.z } : feetBlock();
@@ -316,6 +328,7 @@ const api = {
         const f = feetBlock();
         if (isAir(get(c.x, c.y, c.z) || "x") && !(c.x === f.x && c.z === f.z && (c.y === f.y || c.y === f.y + 1))) {
           set(c.x, c.y, c.z, "minecraft:cobblestone"); inv.Cobblestone--; stats.placed++;
+          if (state === "GRS_INSPECT") stats.placedDuringInspect++;
         }
       } else if (hotbar[P.held] === "Bob-omb" && inv["Bob-omb"] > 0) {
         inv["Bob-omb"]--; stats.bombs++;
@@ -373,7 +386,7 @@ function physics() {
   P.mx = P.x - before.x; P.mz = P.z - before.z;
   // jump + gravity
   if (P.jumpT > 0) {
-    if (P.jumpT > 3 && passable(P.x, P.y + 2.1, P.z)) P.y += 0.3;
+    if (P.jumpT > 3 && passable(P.x, P.y + 2.1, P.z)) P.y += process.env.JUMPBOOST ? 0.6 : 0.3;
     P.jumpT--;
   } else {
     const fy = Math.floor(P.y);
@@ -464,6 +477,16 @@ for (; t < MAX && running; t++) {
       "goal", mv.goal && mv.goal.id, "act", b.act && b.act.key + "/" + b.act.phase + "/" + b.act.moves, "dig", mv.digger.step ? mv.digger.step.phase + JSON.stringify(mv.digger.step.feet) + (mv.digger.step.drop ? "drop" : "") + "place" + mv.digger.step.place.length : "-", mv.digger.failures, mv.digger.lastReason, "|", DEBUG.ctx.detail);
   }
   if (state !== lastState) { log.push("@" + t + " state " + state); lastState = state; }
+}
+if (scenarioName === "gemspot") warps.forEach((w) => { if (/glass/.test(get(w.x + 1, w.y, w.z) || "")) stats.gemsLeftNearRoute++; });
+let leftoverSupport = 0;
+if (scenarioName === "bridge") {
+  for (let x = 35; x <= 42; x++) for (let y = 60; y <= 66; y++) for (let z = 18; z <= 26; z++) {
+    if (get(x, y, z) !== "minecraft:cobblestone") continue;
+    const isWarp = warps.some((w) => w.x === x && w.z === z && y <= w.y);
+    if (!isWarp) { leftoverSupport++; if (process.env.ATK) console.log("LEFTOVER", x, y, z); }
+  }
+  stats.leftoverSupport = leftoverSupport;
 }
 const st = routeStatus();
 console.log(log.filter((l) => !/^\[log\] (Digging|Sent)/.test(l)).slice(-60).join("\n"));

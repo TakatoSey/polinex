@@ -4,7 +4,13 @@ This macro sets up a Gemstone Macro route for you. Select a route, start **Gemst
 
 1. **Inspect**: move around until Route Status has checked every warp and every line of the *active runtime route*.
 2. **Decide**: if the route is buildable, build it. If it's "Not doable", try a lobby-specific Dynamic Route Fix. If no fix helps, switch lobbies and inspect again.
-3. **Build**: for each warp: place cobblestone (plus a support bridge or column if it floats), throw a Bob-omb on it (cobble first, then bomb), re-check the cobble, and clear the Etherwarp line to the next warp.
+3. **Build**: for each warp:
+   - Mine any gemstones sitting in the waypoint block.
+   - Place the cobblestone, plus a block under it if there is none, so the Bob-omb lands on it.
+   - Throw a Bob-omb right away from where you stand, and check it was used and really exploded.
+   - Re-check the cobble and clear the 2 landing blocks above it (gems included).
+   - Break the temporary support blocks again (blocks directly under a waypoint stay).
+   - Clear the Etherwarp line to the next warp.
 4. **Verify**: re-read Route Status and rebuild whatever is still open, until `setUp === true`.
 
 ## Install
@@ -17,7 +23,7 @@ Copy the whole `gemstone_route_setup/` folder to `.minecraft/polinex/scripts/`, 
 - A Gemstone Macro route is selected
 - Drill/pickaxe in the hotbar
 - Cobblestone (default minimum: 64), and one Bob-omb per bombable waypoint if "Bob-omb Waypoints" is on
-- An Etherwarp item (optional; it's only used for big climbs)
+- An Etherwarp item (optional; only used for a one-off long trip or a big climb, never for moving around while building)
 - Route Status HUD on. Turn on Route Rendering → Bombs too, so `notBombable` is known.
 
 ## Stages on the HUD
@@ -57,13 +63,15 @@ In game: `.grs log` shows the last 15 lines (`.grs log 50` for more) and `.grs c
 - **Inspection is X/Z only**: the full height is always loaded and only X/Z render in later, so inspection only needs to get close in X/Z. *Walking* there may still go up or down freely, through caves and drops, if the planner finds a good path. Only *digging* stays level at the current height, and it never Etherwarps or digs up or down just to check a warp.
 - **Tunnel mining like the powder module**: left-click is *held*, never spam-clicked. A tunnel runs along one axis until that axis is done (an L-shape, never a zigzag) with a fixed yaw straight down the tunnel. The camera only moves between two points ~3° apart: the lower part of the head block (~21°) and the top of the feet block (~24°). Once the head block breaks, the same held crosshair runs into the feet block. While stepping forward the camera doesn't move at all, so the held button carries on into the next head block. The button only stays down while the crosshair is on a tunnel block it may mine: the current step, the next head blocks, and the next feet block only if the block behind it is still solid. It's released immediately (also predicted ~3 ticks ahead while walking) before it could touch the floor, walls or a gem. A dead-man switch releases the button and walk keys if the miner or digger stops being driven for ~2 ticks.
 - **No 45° digging down**: the digger has no diagonal-down staircase, because that pattern trips failsafes. To go lower it walks, drops off a ledge onto known ground (up to `Max Drop`), or tunnels level until it's above the target and then digs a straight vertical shaft.
-- **No movement while mining**: the miner releases WASD every tick it mines. For a vertical shaft it first sneaks onto the block centre, waits until it stands completely still, mines the block under its feet without touching a key, and then just falls (only onto known ground within `Max Drop`). Left-click is released as soon as a block is gone, and instamined blocks get single clicks, so a held attack can't keep breaking the next block.
+- **No movement while mining**: the miner releases WASD every tick it mines. For a vertical shaft it first sneaks onto the block centre, waits until it stands completely still, then mines the block under its feet without touching a key. It aims ~80° down slightly *in front of* itself along its current facing; aiming exactly straight down makes the yaw undefined and the camera spins. Then it just falls, only onto known ground within `Max Drop`.
+- **No blocks while tunnelling**: the digger never places blocks. A missing floor is a safe drop or a blocked direction, and steps are only planned while standing on the ground, so jump boost (god potion) no longer looks like "no floor here". Blocks are only placed for the waypoint itself, the block under it, and support to reach a floating waypoint.
 - **Unknown terrain**: unloaded blocks are never treated as air. For far or unloaded targets the mover hops toward loaded spots in the same direction, so it never doubles back.
-- **Etherwarp** only when the goal is at least `Etherwarp Min Rise` blocks up (legit handler `etherwarp.etherwarpTo`, with planner fallback). **Instant Transmission** is optional, and only used on long, straight, open walking segments.
+- **Etherwarp is not a way of moving around.** It's only used for a single long trip to a far-away spot (`Etherwarp Min Distance`, 70) or a big climb (`Etherwarp Min Rise`, 15). It's always exactly one warp (`etherwarp.directTo`, never a planned chain of warps), at most once per `Etherwarp Cooldown` (45 s), and never while inspecting or for building moves. **Instant Transmission** is optional (off), and only used on long, straight, open walking segments.
 - **Goblin Queen's Den / Jungle Temple**: only a sphere of `Structure Core Radius` around their centre is avoided (from `skyblock.chStructures()`), not the whole region. A walking path through a core is swapped for a dug one when possible.
 - **Protected blocks**: gemstone glass and panes, bedrock and other unbreakables, cobblestone placed by other players, and anything not in "Breakable Blocks" (unless "Mine Unlisted Blocks" is on). A block that doesn't break within ~3× its expected time is blacklisted for this lobby and never tried again.
 - **Lines**: rays go from three eye heights (1.27 / 1.54 / 1.62 while standing on the warp) to the next warp's top and centre. Wider rays are added if Route Status still reports the line blocked. After each change the script waits for Route Status again, and never trusts its own rays alone.
-- **Floating waypoints**: the script finds the shortest bridge (up to `Max Support Bridge`) from a wall or floor that keeps clear of the landing space and the route lines. It builds columns by pillar-jumping, and other bridges by normal placement.
+- **Floating waypoints**: the script finds the shortest support chain (up to `Max Support Bridge`) from a wall or floor that keeps clear of the landing space and the route lines. Blocks are normally placed from the side, standing where a face to click on is actually visible. Only a straight column *under* a floating waypoint is built by towering up (jump, then place under yourself once your feet are clearly above the block; clicking at the moment of the jump gets rejected). That pillar placement is otherwise just the last resort. After the Bob-omb, every support block is broken again except blocks directly under a waypoint.
+- **Gems at the waypoint**: gemstones in the waypoint block and the 2 landing blocks above it are mined (`Mine Gems At Waypoints`, on). Gems anywhere else (the veins) are never touched.
 - **Lobby switch**: it records the scoreboard id, runs `/warp hub`, waits, runs the Return Command (default `warp cn`), and checks that the id changed. If you landed in the same lobby, it switches again.
 - **Dynamic Route Fix**: see the limitations below. If the fix changes the runtime route (waypoints moved or removed), the corrected route is fully re-inspected.
 
@@ -97,6 +105,9 @@ node tools/sim.js fix      # Not doable -> Dynamic Route Fix toggle -> re-inspec
 node tools/sim.js far      # X/Z render distance, a corridor that leads away first, lower target cavern:
                            # must mine straight, stay level while inspecting, never dig 45 degrees down
 node tools/sim.js diag     # target exactly diagonal: L-shaped straight tunnels, no zigzag
+node tools/sim.js gemspot  # gems in and above the waypoints (mined) next to a vein (kept)
+node tools/sim.js bridge   # waypoint floating beside a wall: sideways support, removed again afterwards
+JUMPBOOST=1 node tools/sim.js far   # jump boost: still no blocks placed while tunnelling
 node tools/sim.js shaft    # route straight below a sealed pocket: centre, dig a vertical shaft standing still, drop in
 EXPECT_FAIL=1 node tools/sim.js gem   # gemstone on a line -> stops with a manual-step message
 ```

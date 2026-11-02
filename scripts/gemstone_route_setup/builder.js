@@ -1,15 +1,18 @@
 /// <reference path="../polinex.d.ts" />
 // Builds every warp of the active runtime route:
-//   spot   - cobblestone at the waypoint (+ bridge from the nearest wall/floor if it floats), 2 free blocks above
-//   bomb   - Bob-omb on the waypoint (cobble first, then bomb), skipped in no-bomb zones / notBombable
-//   respot - re-check the cobble after the blast
-//   line   - clear the Etherwarp line to the next warp (rays + Route Status re-checks)
+//   spot    - cobblestone at the waypoint (+ support chain from the nearest wall/floor if it floats) and a block
+//             under it when there is none (so the Bob-omb lands on it instead of flying through).
+//             Gemstones sitting in the waypoint block are mined (there nearly always are some).
+//   bomb    - Bob-omb on the waypoint right after the cobble, from where we stand; checks it was used
+//   respot  - re-check the cobble after the blast, clear the 2 landing blocks above it (gems included)
+//   cleanup - break our support chain blocks again (blocks directly under a waypoint stay)
+//   line    - clear the Etherwarp line to the next warp (rays + Route Status re-checks)
 // tick(st) -> { s: "busy" } | { s: "done" } | { s: "fail", reason }
 
 const U = require("./util.js");
 const S = require("./status.js");
 
-const STEPS = ["spot", "bomb", "respot", "line"];
+const STEPS = ["spot", "bomb", "respot", "cleanup", "line"];
 
 function Builder(ctx) {
   this.ctx = ctx;
@@ -124,8 +127,10 @@ Builder.prototype.tick = function (st) {
   ctx.progressText = "Warp #" + w.number + " (" + (st.warps.length - this.queue.length + 1) + "/" + st.warps.length + ") - " + stepName;
 
   let r;
-  if (stepName === "spot" || stepName === "respot") r = this.ensureSpot(w);
+  if (stepName === "spot") r = this.ensureSpot(w, false);
+  else if (stepName === "respot") r = this.ensureSpot(w, true);
   else if (stepName === "bomb") r = this.bombStep(w, p);
+  else if (stepName === "cleanup") r = this.cleanupSupport(w, p, st);
   else r = this.clearLine(w, next);
 
   if (r.s === "busy") return r;
@@ -166,45 +171,89 @@ Builder.prototype.hasSolidNeighbour = function (cell) {
   return false;
 };
 
-Builder.prototype.ensureSpot = function (w) {
+Builder.prototype.ensureSpot = function (w, landing) {
   const ctx = this.ctx;
   const B = ctx.blocks;
   const cob = this.cobPos(w);
   const info = B.info(cob);
   if (!info.loaded) return this.travel(cob, "warp #" + w.number);
+  const gemOk = { allowGem: ctx.cfg.mineGemsAtWaypoint() };
 
   if (B.isCobble(info.id)) {
-    for (let h = 1; h <= 2; h++) {
-      const cell = U.up(cob, h);
-      const hi = B.info(cell);
-      if (hi.passable) continue;
-      if (hi.gem) return { s: "fail", reason: "gemstone in the landing space above warp #" + w.number, fatal: true };
-      ctx.detail = "Clearing landing space above #" + w.number;
-      return this.action("mine", cell);
+    // a block under the waypoint so a Bob-omb lands on it (only if there is none yet)
+    const under = U.up(cob, -1);
+    const ui = B.info(under);
+    if (!landing && ui.loaded && ui.passable && !ui.liquid && !this.underFailed) {
+      ctx.detail = "Placing the block under waypoint #" + w.number;
+      const r = this.action("place", under);
+      if (r.s === "fail") { this.underFailed = true; ctx.warn("Could not place a block under #" + w.number + ": " + r.reason); return { s: "busy" }; }
+      return r.s === "done" ? { s: "busy" } : r;
     }
+    if (landing) {
+      for (let h = 1; h <= 2; h++) {
+        const cell = U.up(cob, h);
+        const hi = B.info(cell);
+        if (hi.passable) continue;
+        if (hi.gem && !gemOk.allowGem) return { s: "fail", reason: "gemstone in the landing space above warp #" + w.number + " (Mine Gems At Waypoints is off)", fatal: true };
+        ctx.detail = "Clearing landing space above #" + w.number;
+        return this.action("mine", cell, null, gemOk);
+      }
+    }
+    this.underFailed = false;
     return { s: "done" };
   }
   if (!info.passable) {
-    if (info.gem) return { s: "fail", reason: "gemstone occupies the waypoint block of #" + w.number, fatal: true };
-    ctx.detail = "Mining " + info.id + " at waypoint #" + w.number;
-    return this.action("mine", cob);
+    if (info.gem && !gemOk.allowGem) return { s: "fail", reason: "gemstone occupies the waypoint block of #" + w.number + " (Mine Gems At Waypoints is off)", fatal: true };
+    ctx.detail = "Mining " + info.id.replace("minecraft:", "") + " at waypoint #" + w.number;
+    return this.action("mine", cob, null, gemOk);
   }
+  const p = this.progFor(w);
   if (this.hasSolidNeighbour(cob)) {
-    ctx.detail = "Placing support at #" + w.number;
-    return this.action("place", cob);
+    ctx.detail = "Placing cobble at #" + w.number;
+    return this.action("place", cob, null, { pillar: !!p.column });
   }
-  const chain = this.bridgeChain(w, cob);
+  if (!p.chain) {
+    p.chain = this.bridgeChain(w, cob);
+    // a straight column under the waypoint is built by towering up (jump + place under, timed right);
+    // those blocks are "under the waypoint" and stay. Any other support chain uses normal placement.
+    p.column = !!p.chain && p.chain.every((c) => c.x === cob.x && c.z === cob.z && c.y < cob.y);
+  }
+  const chain = p.chain;
   if (!chain) {
     return { s: "fail", fatal: true, reason: "waypoint #" + w.number + " " + U.fmt(cob) + " floats with no wall/floor within " +
       ctx.cfg.maxBridge() + " blocks. Manual step: place one block next to it, then restart." };
   }
   for (let i = 0; i < chain.length; i++) {
-    if (!B.isCobble(B.info(chain[i]).id)) {
-      ctx.detail = "Building support bridge to #" + w.number + " (" + (i + 1) + "/" + chain.length + ")";
-      return this.action("place", chain[i]);
-    }
+    // chain cells were planned on air, so any cobble there now is ours (even if it landed from a neighbour click)
+    if (B.isCobble(B.info(chain[i]).id)) { B.ourCobble.add(U.key(chain[i])); continue; }
+    ctx.detail = (p.column ? "Towering up under #" : "Placing support block for #") + w.number + " (" + (i + 1) + "/" + chain.length + ")";
+    return this.action("place", chain[i], null, { pillar: p.column });
   }
   return { s: "busy" }; // chain complete, the waypoint itself is placed next tick
+};
+
+// Break the support chain again: only blocks directly under a waypoint stay (they cannot hurt the route).
+Builder.prototype.cleanupSupport = function (w, p, st) {
+  const ctx = this.ctx;
+  const B = ctx.blocks;
+  if (!p.chain || !p.chain.length) return { s: "done" };
+  const keep = (cell) => st.warps.some((x) => {
+    const c = this.cobPos(x);
+    return c.x === cell.x && c.z === cell.z && cell.y <= c.y;
+  });
+  for (let i = p.chain.length - 1; i >= 0; i--) {
+    const cell = p.chain[i];
+    const ci = B.info(cell);
+    if (!ci.loaded || !B.isCobble(ci.id) || keep(cell)) continue;
+    B.ourCobble.add(U.key(cell)); // chain cells were air when planned: cobble there is ours
+    ctx.detail = "Removing support block " + U.fmt(cell) + " of #" + w.number;
+    const r = this.action("mine", cell);
+    if (r.s === "fail") { ctx.warn("Could not remove support block " + U.fmt(cell) + ": " + r.reason); p.chain.splice(i, 1); return { s: "busy" }; }
+    if (r.s === "done") { B.ourCobble.delete(U.key(cell)); ctx.log("Removed support block " + U.fmt(cell) + " of #" + w.number); }
+    return { s: "busy" };
+  }
+  p.chain = null;
+  return { s: "done" };
 };
 
 // Shortest chain of air cells from a wall/floor to the waypoint that avoids landing space and route lines.
@@ -266,7 +315,13 @@ Builder.prototype.bombStep = function (w, p) {
   }
   ctx.detail = "Bob-omb on warp #" + w.number;
   const r = this.action("bomb", cob, U.top(cob));
-  if (r.s === "done") { p.bombed = true; this.lastChangeAt = U.now(); }
+  if (r.s === "done") { p.bombed = true; this.lastChangeAt = U.now(); ctx.log("Bob-omb on #" + w.number + " exploded"); }
+  if (r.s === "fail" && /did not explode|not used/.test(r.reason)) {
+    // do not loop on a spot where bombs do not work; the route can still be built, Route Status decides
+    p.bombed = true;
+    ctx.warn("Bob-omb on #" + w.number + ": " + r.reason + " - continuing without it");
+    return { s: "done" };
+  }
   return r;
 };
 
@@ -332,7 +387,7 @@ Builder.prototype.clearLine = function (w, next) {
 Builder.prototype.travel = function (pos, label) {
   const ctx = this.ctx;
   const goal = {
-    id: "travel:" + U.key(pos), pos: pos, near: 4, approach: true, label: label,
+    id: "travel:" + U.key(pos), pos: pos, near: 4, approach: true, label: label, allowEther: true, // long one-off trips only
     arrive: () => ctx.blocks.info(pos).loaded && U.dist(player.pos(), pos) < 24,
   };
   ctx.mover.goTo(goal);
@@ -352,7 +407,7 @@ Builder.prototype.canActFromHere = function (kind, cell, aim) {
     return !!ctx.placer.faceFor(cell, eye);
   }
   const d = U.dist(eye, aim);
-  if (d > 9 || d < 2.5) return false;
+  if (d > 9 || d < 1) return false; // throw right from where we placed the cobble
   const hit = world.raytraceFrom(eye, aim);
   return hit.type === "MISS" || U.dist(U.v(hit.x, hit.y, hit.z), aim) < 1.5;
 };
@@ -367,8 +422,9 @@ Builder.prototype.standSupports = function (kind, cell, aim, opts) {
     if (best) out.push(U.up(U.floor(best), -1));
   }
   const reach = kind === "bomb" ? 6 : ctx.cfg.reach() - 0.7; // margin for imprecise arrival
-  ctx.blocks.standSpotsFor(cell, aim || U.center(cell), reach, 4).forEach((f) => {
-    if (kind === "bomb" && U.dist(U.center(f), aim) < 2.5) return;
+  const pred = kind === "place" ? (eye, feet) => !U.same(feet, cell) && !U.same(U.up(feet, 1), cell) && !!ctx.placer.faceFor(cell, eye) : null;
+  ctx.blocks.standSpotsFor(cell, aim || U.center(cell), reach, 4, pred).forEach((f) => {
+    if (kind === "bomb" && U.dist(U.center(f), aim) < 1) return;
     out.push(U.up(f, -1));
   });
   const seen = new Set();
@@ -382,7 +438,8 @@ Builder.prototype.action = function (kind, cell, aim, opts) {
   if (!this.act || this.act.key !== k) {
     this.release();
     this.act = { key: k, kind: kind, cell: c, aim: aim || U.center(c), opts: opts || {}, phase: "try", moves: 0, pre: null,
-      pillar: kind === "place" && ctx.placer.canPillar(c), pmoves: 0, pillarMove: false };
+      pillar: kind === "place" && !!(opts && opts.pillar) && ctx.placer.canPillar(c), pmoves: 0, pillarMove: false };
+    // pillar (jump + place under) only for columns under a floating waypoint or as a last resort
   }
   const a = this.act;
 
@@ -426,7 +483,7 @@ Builder.prototype.action = function (kind, cell, aim, opts) {
     }
     const pr = ctx.placer.pillarTick(c);
     if (pr.s === "done") { this.act = null; this.lastChangeAt = U.now(); return { s: "done" }; }
-    if (pr.s === "fail") { ctx.log("Pillar placement failed (" + pr.reason + "), trying a normal placement"); a.pillar = false; }
+    if (pr.s === "fail") { a.pillar = false; return { s: "fail", reason: "pillar placement failed: " + pr.reason }; }
     return { s: "busy" };
   }
 
@@ -457,17 +514,25 @@ Builder.prototype.bombFallback = function (a) {
 
 Builder.prototype.relocate = function (a, reason) {
   const ctx = this.ctx;
-  if (++a.moves > 3) return this.bombFallback(a) || { s: "fail", reason: reason + " (after 3 repositioning attempts)" };
+  const lastResortPillar = () => {
+    if (a.kind !== "place" || a.triedPillar || !ctx.placer.canPillar(a.cell)) return null;
+    a.triedPillar = true;
+    a.pillar = true;
+    ctx.log("No spot sees a face to place " + U.fmt(a.cell) + " against; using pillar placement");
+    return { s: "busy" };
+  };
+  if (++a.moves > 3) return lastResortPillar() || this.bombFallback(a) || { s: "fail", reason: reason + " (after 3 repositioning attempts)" };
   const here = U.up(player.blockPos(), -1);
   // never stand inside / on top of the cell we are about to fill
   const avoid = new Set(a.kind === "place" ? [U.key(U.up(a.cell, -1)), U.key(U.up(a.cell, -2))] : []);
   const supports = this.standSupports(a.kind, a.cell, a.aim, a.moves > 1 ? null : a.opts)
     .filter((s) => !U.same(s, here) && !avoid.has(U.key(s)));
+  if (a.kind === "place" && !supports.length) { const pr = lastResortPillar(); if (pr) return pr; }
   const self = this;
   ctx.mover.stop();
   ctx.mover.goTo({
     id: "act:" + a.key + ":" + a.moves, pos: a.cell, supports: supports.length ? supports : null, near: 4, avoid: avoid,
-    digTarget: a.cell, allowEther: true, label: a.kind + " " + U.fmt(a.cell),
+    digTarget: a.cell, allowEther: false, label: a.kind + " " + U.fmt(a.cell),
     arrive: () => self.canActFromHere(a.kind, a.cell, a.aim),
   });
   a.phase = "move";
