@@ -439,12 +439,21 @@ function physics() {
   }
   P.speed = Math.hypot(P.x - before.x, P.z - before.z);
   P.mx = P.x - before.x; P.mz = P.z - before.z;
-  if (scenarioName === "chest" && stats.mined === 8 && !chests.length && !P.chestDone) {
-    const c = { x: Math.floor(P.x), y: Math.floor(P.y), z: Math.floor(P.z) + 1, at: simTime };
-    if (!passable(c.x, c.y, c.z)) c.z -= 2;
+  if (scenarioName === "chest" && stats.mined >= 8 && !P.chestDone && DEBUG.ctx && DEBUG.ctx.mover.digger.step && DEBUG.ctx.mover.digger.step.h) {
+    // the chest spawns in the tunnel right in front of us (where the next step goes) and stays there
+    const h = DEBUG.ctx.mover.digger.step.h, f = feetBlock();
+    const c = { x: f.x + h.x, y: f.y, z: f.z + h.z, at: simTime };
     set(c.x, c.y, c.z, "minecraft:chest"); chests.push(c); P.chestDone = true;
+    stats.chestSpawnedAt = c.x + "," + c.y + "," + c.z + " (player " + f.x + "," + f.y + "," + f.z + ")";
   }
-  for (let i = chests.length - 1; i >= 0; i--) if (simTime - chests[i].at > 4000) { set(chests[i].x, chests[i].y, chests[i].z, "minecraft:air"); chests.splice(i, 1); }
+  for (let i = chests.length - 1; i >= 0; i--) if (simTime - chests[i].at > 60000) { set(chests[i].x, chests[i].y, chests[i].z, "minecraft:air"); chests.splice(i, 1); }
+  chests.forEach((c) => {
+    // pushing into the chest: our walk target is inside its cell and we are right next to it
+    if (P.walkTo && Math.floor(P.walkTo.x) === c.x && Math.floor(P.walkTo.z) === c.z && Math.floor(P.walkTo.y) === c.y &&
+        Math.hypot(P.x - (c.x + 0.5), P.z - (c.z + 0.5)) < 1.4) stats.walkIntoChest = (stats.walkIntoChest || 0) + 1;
+    const mo = mouseOver();
+    if (P.keys.attack && mo && mo.block.x === c.x && mo.block.y === c.y && mo.block.z === c.z) stats.hitChest = (stats.hitChest || 0) + 1;
+  });
   if (chests.length && (P.walkTo || walk || P.keys.attack)) stats.busyDuringChest = (stats.busyDuringChest || 0) + 1;
   // facing vs moving: walking backwards / sideways (camera not turned toward where we walk)
   if (P.look && P.speed > 0.08 && P.walkTo && !walk) {

@@ -93,8 +93,8 @@ const SETTINGS = [
     description: "Hotbar slot used when cobble / Bob-ombs must be moved from the inventory." },
 
   // ---- Display ----
-  { id: "chestWaitSec", type: "slider", name: "Treasure Chest Pause (s)", min: 0, max: 60, default: 15,
-    description: "When a treasure chest spawns next to you: stop moving/mining this long (or until it is gone) so you or a chest feature can open it. 0 = ignore." },
+  { id: "chestWaitSec", type: "slider", name: "Treasure Chest Pause (s)", min: 0, max: 60, default: 0,
+    description: "0 (default): treasure chests are simply avoided (never mined or walked into, tunnels go around them). >0: also stop this long when one spawns next to you." },
   { id: "copyLog", type: "string", name: "Copy Log", default: "",
     description: ".grs log puts the recent log here: click the box, Ctrl+A, Ctrl+C (scripts cannot write the clipboard)." },
   { id: "render", type: "boolean", name: "Render Route Overlay", default: true },

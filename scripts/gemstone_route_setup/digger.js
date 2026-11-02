@@ -358,6 +358,15 @@ Digger.prototype.tick = function (targetFeet, arrive, flat) {
   }
 
   if (s.phase === "walk") {
+    // something appeared in the cells we step into (a treasure chest spawned there): never walk into it,
+    // drop this step and go around (the chest is protected, so this direction is now blocked)
+    for (let i = 0; i < s.clear.length; i++) {
+      const ci = ctx.blocks.info(s.clear[i]);
+      if (ci.loaded && !ci.passable) {
+        player.resetWASD();
+        return this.badStep((/chest/.test(ci.id) ? "treasure chest" : ci.id) + " appeared at " + U.fmt(s.clear[i]) + ", going around");
+      }
+    }
     const goal = U.v(s.feet.x + 0.5, s.feet.y, s.feet.z + 0.5);
     const here = player.blockPos();
     const landed = s.drop && here.x === s.feet.x && here.z === s.feet.z && here.y <= s.feet.y && player.onGround();
