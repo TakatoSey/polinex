@@ -12,7 +12,9 @@
 const U = require("./util.js");
 const S = require("./status.js");
 
-const STEPS = ["spot", "bomb", "respot", "cleanup", "line"];
+// Two phases: first every waypoint is built, then every line is cleared, so each line has a cobble at BOTH
+// ends to stand on (obstructions near the far end are mined from that end).
+const PHASES = { spot: ["spot", "bomb", "respot", "cleanup"], line: ["line"] };
 
 function Builder(ctx) {
   this.ctx = ctx;
@@ -21,6 +23,8 @@ function Builder(ctx) {
   this.cur = null;
   this.act = null;
   this.lastChangeAt = 0;
+  this.unreachable = new Map(); // obstruction key -> reason (never retried in a loop)
+  this.bombTried = new Set();
 }
 
 Builder.prototype.reset = function () {
@@ -28,6 +32,8 @@ Builder.prototype.reset = function () {
   this.prog.clear();
   this.queue = [];
   this.cur = null;
+  this.unreachable.clear();
+  this.bombTried.clear();
 };
 
 Builder.prototype.release = function () {
@@ -63,7 +69,7 @@ Builder.prototype.start = function (st, numbers) {
     const w = warps.find((x) => x.number === n);
     if (w) { const p = this.progFor(w); p.done = false; p.fails = 0; p.blocked = null; }
   });
-  this.queue = order;
+  this.queue = order.map((n) => ({ number: n, phase: "spot" })).concat(order.map((n) => ({ number: n, phase: "line" })));
   this.cur = null;
 };
 
@@ -115,7 +121,7 @@ Builder.prototype.tick = function (st) {
   const ctx = this.ctx;
   if (!this.cur) {
     if (!this.queue.length) return { s: "done" };
-    this.cur = { number: this.queue[0], step: 0 };
+    this.cur = { number: this.queue[0].number, phase: this.queue[0].phase, step: 0 };
     this.release();
   }
   const w = st.warps.find((x) => x.number === this.cur.number);
@@ -123,8 +129,11 @@ Builder.prototype.tick = function (st) {
   const idx = st.warps.indexOf(w);
   const next = st.warps.length > 1 ? st.warps[(idx + 1) % st.warps.length] : null;
   const p = this.progFor(w);
-  const stepName = STEPS[this.cur.step];
-  ctx.progressText = "Warp #" + w.number + " (" + (st.warps.length - this.queue.length + 1) + "/" + st.warps.length + ") - " + stepName;
+  const steps = PHASES[this.cur.phase];
+  const stepName = steps[this.cur.step];
+  const left = this.queue.filter((q) => q.phase === this.cur.phase).length;
+  ctx.progressText = (this.cur.phase === "spot" ? "Building warp #" + w.number : "Line #" + w.number + (next ? " -> #" + next.number : "")) +
+    " (" + (st.warps.length - left + 1) + "/" + st.warps.length + ") - " + stepName;
 
   let r;
   if (stepName === "spot") r = this.ensureSpot(w, false);
@@ -137,9 +146,9 @@ Builder.prototype.tick = function (st) {
   if (r.s === "done") {
     this.release();
     this.cur.step++;
-    if (this.cur.step >= STEPS.length) {
-      p.done = true;
-      ctx.log("Warp #" + w.number + " built" + (p.bombed ? " (bombed)" : ""));
+    if (this.cur.step >= steps.length) {
+      if (this.cur.phase === "line") { p.done = true; ctx.log("Line #" + w.number + (next ? " -> #" + next.number : "") + " clear"); }
+      else ctx.log("Warp #" + w.number + " built" + (p.bombed ? " (bombed)" : ""));
       this.queue.shift();
       this.cur = null;
       ctx.progress();
@@ -152,6 +161,8 @@ Builder.prototype.tick = function (st) {
   p.fails++;
   p.issues.push(r.reason);
   ctx.setIssue("Warp #" + w.number + ": " + r.reason);
+  // a dig that already ran its full length without arriving will not do better on a retry
+  if (/Max Dig Length|digging keeps failing/.test(r.reason)) r.fatal = true;
   if (r.fatal || p.fails >= 3) {
     p.blocked = r.reason;
     p.fatal = !!r.fatal;
@@ -348,6 +359,27 @@ Builder.prototype.lineObstruction = function (from, to, wide) {
   return best;
 };
 
+// Solid blocks along the Etherwarp line from `from` to `to`, nearest to `from` first.
+Builder.prototype.lineCells = function (from, to) {
+  const B = this.ctx.blocks;
+  let cells = [];
+  try { cells = U.arr(world.blocksBetween(U.eyesOn(from)[0], U.v(to.x + 0.5, to.y + 0.98, to.z + 0.5))).map(U.floor); } catch (e) { cells = []; }
+  return cells.filter((c) => !U.same(c, from) && !U.same(c, to) && !U.same(c, U.up(from, 1)) && !U.same(c, U.up(from, 2)) &&
+    !B.info(c).passable);
+};
+
+// Can the block be mined while standing on this warp cobble? (in reach + visible from that eye)
+Builder.prototype.reachableFrom = function (support, cell) {
+  const reach = this.ctx.cfg.reach();
+  const eyes = U.eyesOn(support);
+  for (let i = 0; i < eyes.length; i++) {
+    if (U.dist(eyes[i], U.center(cell)) > reach) continue;
+    const h = world.raytraceFrom(eyes[i], U.center(cell));
+    if (h.block && U.same(U.floor(h.block), cell)) return true;
+  }
+  return false;
+};
+
 Builder.prototype.clearLine = function (w, next) {
   const ctx = this.ctx;
   if (!next) return { s: "done" };
@@ -355,6 +387,7 @@ Builder.prototype.clearLine = function (w, next) {
   const B = ctx.blocks;
   if (!B.info(from).loaded) return this.travel(from, "warp #" + w.number);
   if (!B.info(to).loaded) return this.travel(to, "warp #" + next.number);
+  const label = "line #" + w.number + " -> #" + next.number;
 
   const statusSays = S.has(w, ["lineBlocked", "lineToMine"]);
   let obs = this.lineObstruction(from, to, false);
@@ -366,21 +399,47 @@ Builder.prototype.clearLine = function (w, next) {
       if (!this.lineWaitStart) this.lineWaitStart = U.now();
       if (U.now() - this.lineWaitStart < 10000) return { s: "busy" };
       this.lineWaitStart = 0;
-      return { s: "fail", fatal: true, reason: "Route Status reports line #" + w.number + " -> #" + next.number +
+      return { s: "fail", fatal: true, reason: "Route Status reports " + label +
         " blocked, but no obstruction is visible to the rays. Manual step: look along the line and clear what Polinex highlights." };
     }
   }
   this.lineWaitStart = 0;
   const allowGem = ctx.cfg.mineGemsOnLine();
-  const why = B.mineBlockReason(obs.block, { allowGem: allowGem });
-  if (why) return { s: "fail", fatal: true, reason: "line #" + w.number + " -> #" + next.number + " blocked by " + why };
-  ctx.detail = "Clearing line #" + w.number + " -> #" + next.number + " at " + U.fmt(obs.block);
-  return this.action("mine", obs.block, null, {
+
+  // Prefer a block we can mine standing on either end of the line (we are often already on one of them).
+  let target = obs.block, stand = null;
+  const cells = this.lineCells(from, to);
+  const ends = [from, to].filter((e) => B.isCobble(B.info(e).id));
+  const order = cells.slice(0, 6).concat(cells.slice(-6).reverse());
+  for (let i = 0; i < order.length && !stand; i++) {
+    const c = order[i];
+    if (this.unreachable.has(U.key(c)) || B.mineBlockReason(c, { allowGem: allowGem })) continue;
+    for (let j = 0; j < ends.length; j++) {
+      if (this.reachableFrom(ends[j], c)) { target = c; stand = ends[j]; break; }
+    }
+  }
+
+  const tk = U.key(target);
+  if (this.unreachable.has(tk)) {
+    return { s: "fail", fatal: true, reason: label + ": cannot reach the obstruction " + U.fmt(target) + " (" + this.unreachable.get(tk) +
+      "). Manual step: mine that block (or the blocks around it), then start again." };
+  }
+  const why = B.mineBlockReason(target, { allowGem: allowGem });
+  if (why) return { s: "fail", fatal: true, reason: label + " blocked by " + why };
+  ctx.detail = "Clearing " + label + " at " + U.fmt(target) + (stand ? " from warp #" + (U.same(stand, from) ? w.number : next.number) : "");
+  const r = this.action("mine", target, null, {
     allowGem: allowGem,
-    prefer: [from],
-    fallbackBomb: ctx.cfg.useBombs() && ctx.cfg.bombLines(),
-    bombFrom: from,
+    prefer: stand ? [stand] : ends,
+    fallbackBomb: ctx.cfg.useBombs() && ctx.cfg.bombLines() && !this.bombTried.has(tk),
+    bombFrom: stand || from,
+    lineCell: true,
   });
+  if (r.s === "fail") {
+    // remember it: the same block is never retried in a loop, the next attempt reports it right away
+    this.unreachable.set(tk, r.reason);
+    ctx.warn(label + ": giving up on " + U.fmt(target) + " for now: " + r.reason);
+  }
+  return r;
 };
 
 // ---------- generic travel ----------
@@ -505,7 +564,9 @@ Builder.prototype.bombFallback = function (a) {
   const ctx = this.ctx;
   if (a.kind !== "mine" || !a.opts.fallbackBomb) return null;
   if (ctx.blocks.noBombZone(a.cell) || ctx.items.count(ctx.cfg.bombItem()) <= 0) return null;
-  ctx.log("No spot to mine " + U.fmt(a.cell) + " from; using a Bob-omb");
+  if (this.bombTried.has(U.key(a.cell))) return null;
+  this.bombTried.add(U.key(a.cell));
+  ctx.log("No spot to mine " + U.fmt(a.cell) + " from; trying one Bob-omb");
   this.release();
   this.act = { key: "bomb:" + U.key(a.cell), kind: "bomb", cell: a.cell, aim: U.center(a.cell),
     opts: { prefer: a.opts.bombFrom ? [a.opts.bombFrom] : [] }, phase: "try", moves: 0, pre: null };

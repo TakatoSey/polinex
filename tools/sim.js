@@ -83,6 +83,17 @@ if (scenarioName === "basic" || scenarioName === "gem") {
   // waypoint floating 3 above the floor but right next to a wall: support goes sideways and must be removed
   fillBox(42, 60, 18, 50, 75, 26, "minecraft:stone");  // wall block of stone
   warps = [{ number: 1, x: 39, y: 64, z: 22 }, { number: 2, x: 20, y: 60, z: 20 }];
+} else if (scenarioName === "midline" || scenarioName === "pit") {
+  // like the screenshot: line #1 -> #2 crosses a stone pillar near warp #2, standing on the pit floor
+  // is impossible (deep pit), only the far end (warp #2) can reach it
+  fillBox(10, 40, 10, 50, 59, 50, "minecraft:air");   // the cavern has no floor near the line: a deep pit
+  fillBox(10, 40, 10, 50, 41, 50, "minecraft:stone"); // pit bottom far below (out of reach)
+  fillBox(12, 59, 12, 18, 59, 18, "minecraft:stone"); // ledge with warp #1
+  fillBox(40, 59, 12, 46, 59, 18, "minecraft:stone"); // ledge with warp #2
+  fillBox(37, 60, 14, 37, 63, 16, "minecraft:stone"); // obstruction 3 blocks before warp #2
+  if (scenarioName === "midline") fillBox(12, 59, 10, 46, 59, 11, "minecraft:stone"); // walkway along the cave wall
+  startPos = { x: 13.5, y: 60, z: 13.5 };
+  warps = [{ number: 1, x: 15, y: 60, z: 15 }, { number: 2, x: 42, y: 60, z: 15 }];
 } else if (scenarioName === "tunnel") {
   // start in a separate pocket: must dig to reach the cavern
   fillBox(56, 60, 20, 60, 62, 24, "minecraft:air");

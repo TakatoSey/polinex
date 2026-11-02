@@ -4,7 +4,7 @@ This macro sets up a Gemstone Macro route for you. Select a route, start **Gemst
 
 1. **Inspect**: move around until Route Status has checked every warp and every line of the *active runtime route*.
 2. **Decide**: if the route is buildable, build it. If it's "Not doable", try a lobby-specific Dynamic Route Fix. If no fix helps, switch lobbies and inspect again.
-3. **Build**: for each warp:
+3. **Build** in two phases. First every waypoint is built, then every line is cleared, so each line has a cobble at *both* ends to stand on. Per warp:
    - Mine any gemstones sitting in the waypoint block.
    - Place the cobblestone, plus a block under it if there is none, so the Bob-omb lands on it.
    - Throw a Bob-omb right away from where you stand, and check it was used and really exploded.
@@ -69,6 +69,7 @@ In game: `.grs log` shows the last 15 lines (`.grs log 50` for more) and `.grs c
 - **Etherwarp is not a way of moving around.** It's only used for a single long trip to a far-away spot (`Etherwarp Min Distance`, 70) or a big climb (`Etherwarp Min Rise`, 15). It's always exactly one warp (`etherwarp.directTo`, never a planned chain of warps), at most once per `Etherwarp Cooldown` (45 s), and never while inspecting or for building moves. **Instant Transmission** is optional (off), and only used on long, straight, open walking segments.
 - **Goblin Queen's Den / Jungle Temple**: only a sphere of `Structure Core Radius` around their centre is avoided (from `skyblock.chStructures()`), not the whole region. A walking path through a core is swapped for a dug one when possible.
 - **Protected blocks**: gemstone glass and panes, bedrock and other unbreakables, cobblestone placed by other players, and anything not in "Breakable Blocks" (unless "Mine Unlisted Blocks" is on). A block that doesn't break within ~3× its expected time is blacklisted for this lobby and never tried again.
+- **Clearing lines from both ends**: the script lists the blocks along the line and first takes one it can mine *standing on either end*: warp A, or warp B for blocks near the far end, the way you'd do it by hand. Only blocks truly in the middle need another stand spot (walking or a tunnel that sidesteps gems). As a last resort it throws at most one Bob-omb. A block it can't reach is remembered and never retried in a loop: the next time it stops with `cannot reach the obstruction (x, y, z) ... Manual step: mine that block`.
 - **Lines**: rays go from three eye heights (1.27 / 1.54 / 1.62 while standing on the warp) to the next warp's top and centre. Wider rays are added if Route Status still reports the line blocked. After each change the script waits for Route Status again, and never trusts its own rays alone.
 - **Floating waypoints**: the script finds the shortest support chain (up to `Max Support Bridge`) from a wall or floor that keeps clear of the landing space and the route lines. Blocks are normally placed from the side, standing where a face to click on is actually visible. Only a straight column *under* a floating waypoint is built by towering up (jump, then place under yourself once your feet are clearly above the block; clicking at the moment of the jump gets rejected). That pillar placement is otherwise just the last resort. After the Bob-omb, every support block is broken again except blocks directly under a waypoint.
 - **Gems at the waypoint**: gemstones in the waypoint block and the 2 landing blocks above it are mined (`Mine Gems At Waypoints`, on). Gems anywhere else (the veins) are never touched.
@@ -108,6 +109,8 @@ node tools/sim.js diag     # target exactly diagonal: L-shaped straight tunnels,
 node tools/sim.js gemspot  # gems in and above the waypoints (mined) next to a vein (kept)
 node tools/sim.js bridge   # waypoint floating beside a wall: sideways support, removed again afterwards
 JUMPBOOST=1 node tools/sim.js far   # jump boost: still no blocks placed while tunnelling
+node tools/sim.js midline  # obstruction near the far end over a deep pit: mined standing on warp #2
+EXPECT_FAIL=1 TICKS=40000 node tools/sim.js pit   # unreachable: stops with a manual-step message, no loop
 node tools/sim.js shaft    # route straight below a sealed pocket: centre, dig a vertical shaft standing still, drop in
 EXPECT_FAIL=1 node tools/sim.js gem   # gemstone on a line -> stops with a manual-step message
 ```

@@ -81,6 +81,11 @@ Digger.prototype.planStep = function (feet, t, flat) {
   if (!first) first = Math.abs(dx) >= Math.abs(dz) ? "x" : "z";
   if (first === "x") { if (dx) dirs.push(ax); if (dz) dirs.push(az); }
   else { if (dz) dirs.push(az); if (dx) dirs.push(ax); }
+  // straight line blocked (gem, liquid, structure...)? a one-block sidestep goes around it
+  if (dirs.length === 1) {
+    const d0 = dirs[0];
+    dirs.push(U.v(d0.z, 0, d0.x), U.v(-d0.z, 0, -d0.x));
+  }
   const reasons = [];
 
   if (dirs.length === 0) {
